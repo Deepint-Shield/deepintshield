@@ -1,6 +1,6 @@
 """Inspect the agent-identity binding the gateway resolved for this VK.
 
-No Entra / ZeroID / OIDC GUIDs appear in code — the SDK discovers the binding
+No Entra / ZeroID / OIDC GUIDs appear in code - the SDK discovers the binding
 from /api/agentic-security/vk-credential-info and, on Azure compute, detects
 the Managed Identity automatically. This is purely for ops visibility."""
 from deepintshield import DeepintShield

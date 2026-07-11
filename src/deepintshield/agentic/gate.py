@@ -8,7 +8,7 @@ Contract:
     * On MASK: apply obligations to the kwargs and return them.
     * On REQUIRE_APPROVAL: poll the approval endpoint; continue on approval,
       raise on denial/timeout.
-    * On DENY: raise ``GuardrailDenied`` — the body must not run.
+    * On DENY: raise ``GuardrailDenied`` - the body must not run.
 """
 
 from __future__ import annotations

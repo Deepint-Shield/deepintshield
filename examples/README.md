@@ -57,6 +57,19 @@ Each folder has `transparent.py` (native model via the gateway) and
 | `autogen/` | `transparent.py` | `tool_gating.py` |
 | `pydanticai/` | `transparent.py`, `chat.py` | `tool_gating.py` |
 
+## Native-hook & durable frameworks
+
+These attach a **single object** at construction — the adapter rides the
+framework's own interceptor / hook / plugin system (no monkey-patch).
+
+| Folder | Attach point | Native hook |
+| --- | --- | --- |
+| `temporal/worker.py` | `Worker(interceptors=[shield.agentic.temporal()])` | `ActivityInboundInterceptor` |
+| `strands/agent.py` | `Agent(hooks=[shield.agentic.strands()])` | `BeforeToolInvocationEvent` |
+| `google_adk/agent.py` | `InMemoryRunner(plugins=[shield.agentic.google_adk()])` | `BasePlugin.before_tool_callback` |
+| `hermes/plugin.py` | `register(ctx): shield.agentic.hermes(ctx)` | plugin `pre_tool_call` |
+| `openclaw/README.md` | `shield.agentic.openclaw_config()` + TS plugin | `models.providers` + `before_tool_call` |
+
 ## MCP
 
 `openai/mcp.py`, `anthropic/mcp.py`, `langchain/mcp.py` - the same `Tool` /

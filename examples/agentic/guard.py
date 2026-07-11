@@ -1,9 +1,9 @@
-"""One line gates every tool an agent calls — no per-tool code, no parameters.
+"""One line gates every tool an agent calls - no per-tool code, no parameters.
 
 ``shield.agentic.guard()`` returns a native LangChain callback handler. LangChain
 fires it before each tool runs; the PDP decides ALLOW / DENY / REQUIRE_APPROVAL,
 and a block aborts the tool. The tool name comes from the framework and the
-tier / policy / identity are all resolved server-side — the application only
+tier / policy / identity are all resolved server-side - the application only
 attaches the handler.
 """
 from langchain_core.tools import tool

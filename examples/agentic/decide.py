@@ -1,4 +1,4 @@
-"""Direct PDP probe — fetch the raw verdict without raising. Useful for custom
+"""Direct PDP probe - fetch the raw verdict without raising. Useful for custom
 control flow or diagnostics."""
 from deepintshield import DeepintShield
 

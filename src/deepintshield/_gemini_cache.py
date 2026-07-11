@@ -1,6 +1,6 @@
 """Gemini context-cache management for the DeepintShield SDK.
 
-Google Gemini doesn't have inline cache markers like Anthropic — instead it
+Google Gemini doesn't have inline cache markers like Anthropic - instead it
 exposes an explicit ``cachedContents`` resource with its own lifecycle:
 
 1. Client calls ``client.caches.create(...)`` with the static portion of the
@@ -14,23 +14,23 @@ exposes an explicit ``cachedContents`` resource with its own lifecycle:
 This module wraps that lifecycle so customers don't have to manage cache
 resources by hand. Design choices for zero-latency / scalable / parallel use:
 
-* **Per-process registry** — a thread-safe dict of ``prefix_hash → (name,
+* **Per-process registry** - a thread-safe dict of ``prefix_hash → (name,
   expires_at_ms)``. Lookups are O(1), no I/O.
-* **Fire-and-forget creation** — the first request that sees a prefix doesn't
+* **Fire-and-forget creation** - the first request that sees a prefix doesn't
   wait for the cache resource to exist. It runs through the provider as a
   normal call, while a background thread creates the cache for the *next*
   call. This keeps the first call's latency identical to no-cache.
-* **Lazy TTL eviction** — expired entries are dropped at lookup time. No
+* **Lazy TTL eviction** - expired entries are dropped at lookup time. No
   background sweeper, no extra timers.
-* **Workspace switch respected** — the gateway strips ``cached_content`` from
+* **Workspace switch respected** - the gateway strips ``cached_content`` from
   outbound requests when the workspace has prompt caching disabled or
   ``google`` not in the provider allow-list, so the SDK's injection becomes
   a no-op end-to-end.
-* **Caller-aware** — if the caller already passed ``cached_content`` on a
+* **Caller-aware** - if the caller already passed ``cached_content`` on a
   call's config, we leave it alone.
 
 Phase 4 ships an explicit ``shield.gemini_cache_manager()`` plus a wrapped
-``shield.genai_cached()`` client that calls into it automatically — opt-in
+``shield.genai_cached()`` client that calls into it automatically - opt-in
 because Gemini's storage cost (~$1/M tok/hr on 1.5 Pro) makes blanket
 auto-caching a footgun for prefixes that don't repeat often.
 """
@@ -64,7 +64,7 @@ def _ttl_seconds_from_string(ttl: str | int | None) -> int:
     """Parse a workspace-style TTL string ("5m", "1h", "6h", "24h") into seconds.
 
     Falls through to ``DEFAULT_TTL_SECONDS`` on unknown values so misconfigured
-    workspaces never throw at request time — they just use the default.
+    workspaces never throw at request time - they just use the default.
     """
     if ttl is None:
         return DEFAULT_TTL_SECONDS

@@ -1,4 +1,4 @@
-"""LangGraph / LangChain binder — native ``langchain_openai`` clients pointed
+"""LangGraph / LangChain binder - native ``langchain_openai`` clients pointed
 at the gateway. Used for both ``shield.bind("langgraph")`` and
 ``shield.bind("langchain")``.
 """

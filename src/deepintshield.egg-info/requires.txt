@@ -16,6 +16,9 @@ openai-agents>=0.0.10
 llama-index>=0.11.0
 autogen-agentchat>=0.4.0
 autogen-ext[openai]>=0.4.0
+temporalio>=1.7.0
+strands-agents>=0.1.0
+google-adk>=0.1.0
 azure-identity>=1.16.0
 
 [anthropic]
@@ -41,6 +44,9 @@ respx>=0.21
 
 [genai]
 google-genai>=1.12.1
+
+[google-adk]
+google-adk>=0.1.0
 
 [langchain]
 langchain-core>=0.3.55
@@ -69,3 +75,9 @@ openai>=1.75.0
 
 [pydanticai]
 pydantic-ai>=0.1.1
+
+[strands]
+strands-agents>=0.1.0
+
+[temporal]
+temporalio>=1.7.0

@@ -1,5 +1,5 @@
 """The framework-agnostic minimal wrapper: point ANY OpenAI-compatible client
-at the gateway with two values — base_url + headers. Everything else (your
+at the gateway with two values - base_url + headers. Everything else (your
 prompts, tools, app code) stays 100% native."""
 from openai import OpenAI
 

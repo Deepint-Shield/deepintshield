@@ -1,4 +1,4 @@
-"""LlamaIndex binder — native ``llama_index`` OpenAI LLM + embedding clients
+"""LlamaIndex binder - native ``llama_index`` OpenAI LLM + embedding clients
 pointed at the gateway."""
 
 from __future__ import annotations

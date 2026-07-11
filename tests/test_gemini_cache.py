@@ -146,7 +146,7 @@ def test_attach_skips_below_min_prefix_tokens():
         prefix_token_estimate=500,
     )
     assert result is None
-    # No pending creation kicked off — caller is below the cost threshold.
+    # No pending creation kicked off - caller is below the cost threshold.
     prefix_hash = _compute_prefix_hash("gemini-2.0-flash", "S", None)
     assert mgr.mark_pending(prefix_hash) is True  # we can claim it ourselves
 
@@ -165,7 +165,7 @@ def test_attach_kicks_off_background_creation():
         system_instruction="S",
         tools=None,
     )
-    # Current call gets no cache — runs normally.
+    # Current call gets no cache - runs normally.
     assert result is None
     # The prefix hash should be in the pending set briefly. We don't assert
     # on `_pending` directly because the background pool may have resolved

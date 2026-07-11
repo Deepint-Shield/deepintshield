@@ -55,7 +55,7 @@ def _mark_anthropic_block_cacheable(block: Any, marker: dict[str, str]) -> bool:
     if not isinstance(block, dict):
         return False
     if "cache_control" in block:
-        # Caller already marked this block — respect it.
+        # Caller already marked this block - respect it.
         return False
     block["cache_control"] = marker
     return True
@@ -76,7 +76,7 @@ def _inject_anthropic(
     if "system" in requested:
         system = body.get("system")
         if isinstance(system, list) and system:
-            # System is already a list of blocks — mark the last one.
+            # System is already a list of blocks - mark the last one.
             _mark_anthropic_block_cacheable(system[-1], marker)
         elif isinstance(system, str) and system.strip():
             # Promote string-form system prompts into block form so we can attach
@@ -115,7 +115,7 @@ def _compute_prefix_hash(
 ) -> str:
     """Stable 16-char SHA-256 prefix of (system messages + tool defs).
 
-    OpenAI uses this as a cache partition key — same hash → same cache bucket.
+    OpenAI uses this as a cache partition key - same hash → same cache bucket.
     Identical prefixes from different conversations therefore share cache
     entries. Returns "" when there's no meaningful static prefix to hash.
     """
@@ -200,7 +200,7 @@ def build_request_hook(
         encoded = json.dumps(body, separators=(",", ":")).encode("utf-8")
         request.headers["content-length"] = str(len(encoded))
         # httpx routes the actual transmitted bytes through `request.stream`
-        # — a single-shot byte iterator built when the Request was first
+        # - a single-shot byte iterator built when the Request was first
         # constructed. Updating only `_content` leaves the stream pointing
         # at the original bytes, so on the wire httpx emits the *old* body
         # while advertising the *new* content-length. The result on the
@@ -211,7 +211,7 @@ def build_request_hook(
         request._content = encoded  # type: ignore[attr-defined]
         try:
             from httpx._content import ByteStream  # type: ignore
-        except ImportError:  # httpx <0.24 fallback — module path drifted.
+        except ImportError:  # httpx <0.24 fallback - module path drifted.
             from httpx import _content  # type: ignore
             ByteStream = getattr(_content, "ByteStream", None)
         if ByteStream is not None:

@@ -1,4 +1,4 @@
-"""Gate CrewAI tools through the PDP — decide() runs before each tool body."""
+"""Gate CrewAI tools through the PDP - decide() runs before each tool body."""
 from crewai.tools import tool
 
 from deepintshield import DeepintShield

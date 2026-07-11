@@ -1,4 +1,4 @@
-"""AutoGen (AG2 / autogen-core) enforcement — gate AutoGen ``FunctionTool``
+"""AutoGen (AG2 / autogen-core) enforcement - gate AutoGen ``FunctionTool``
 objects or bare callables registered as tools.
 
 AutoGen's tool surface varies across versions, so this adapter probes the

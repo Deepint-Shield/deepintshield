@@ -1,4 +1,4 @@
-"""AutoGen (AG2) binder — native ``autogen_ext`` OpenAI chat completion client
+"""AutoGen (AG2) binder - native ``autogen_ext`` OpenAI chat completion client
 pointed at the gateway."""
 
 from __future__ import annotations

@@ -28,7 +28,7 @@ class DeepIntShieldError(DeepintShieldError):
 class GuardrailDenied(DeepIntShieldError):
     """Raised when the PDP returns DENY. The call did not execute.
 
-    Always a hard failure — do NOT retry without a policy change. The audit
+    Always a hard failure - do NOT retry without a policy change. The audit
     row is already persisted server-side.
     """
 
@@ -46,7 +46,7 @@ class GuardrailApprovalPending(DeepIntShieldError):
     """Raised when the PDP returns REQUIRE_APPROVAL and the SDK's poll
     timeout expires before a human decides.
 
-    The decision_id is durable — the caller can poll
+    The decision_id is durable - the caller can poll
     GET /api/agentic-security/approvals later, or be notified via the
     platform's webhook integration.
     """
@@ -75,7 +75,7 @@ class GuardrailMasked(DeepIntShieldError):
 
 @dataclass
 class GatewayUnavailable(DeepIntShieldError):
-    """Raised when the gateway is unreachable. Distinct from a DENY —
+    """Raised when the gateway is unreachable. Distinct from a DENY -
     indicates infrastructure trouble, not a policy verdict."""
 
     reason: str = ""

@@ -3,7 +3,7 @@
 The tool-enforcement half of the SDK: ``decide()`` runs before a gated tool
 executes and the verdict (ALLOW / DENY / MASK / REQUIRE_APPROVAL) maps to a
 return value or an exception. All Entra / identity / policy machinery is
-auto-discovered from the gateway — the user passes only ``virtual_key`` and
+auto-discovered from the gateway - the user passes only ``virtual_key`` and
 ``base_url`` to :class:`~deepintshield.client.DeepintShield`.
 
 Typically consumed via ``shield.agentic`` rather than imported directly::

@@ -2,7 +2,7 @@
 
 This is the thinnest possible integration. LangChain already dispatches an
 ``on_tool_start`` event to every registered callback handler *before* any tool
-runs — a LangChain ``BaseTool``, a ``@tool`` function, a LangGraph ``ToolNode``
+runs - a LangChain ``BaseTool``, a ``@tool`` function, a LangGraph ``ToolNode``
 or a prebuilt ReAct agent's tools. We supply a single ``BaseCallbackHandler``
 that calls the PDP in that hook and aborts the tool when the verdict blocks. The
 framework does all of the tool discovery, argument parsing and dispatch; the

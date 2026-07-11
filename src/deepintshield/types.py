@@ -60,7 +60,7 @@ class GuardrailResult:
     raw: dict[str, Any] = field(default_factory=dict)
     # Enforcement mode reported by the gateway: "sync"/"enforce" actually blocks,
     # "shadow"/"async" reports the verdict without blocking. Empty when the
-    # gateway does not report it. Additive and optional — existing callers are
+    # gateway does not report it. Additive and optional - existing callers are
     # unaffected.
     mode: str = ""
 

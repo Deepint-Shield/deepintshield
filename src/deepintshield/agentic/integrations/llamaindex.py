@@ -1,4 +1,4 @@
-"""LlamaIndex enforcement — gate each ``FunctionTool`` / ``BaseTool`` by
+"""LlamaIndex enforcement - gate each ``FunctionTool`` / ``BaseTool`` by
 wrapping its ``call`` (and async ``acall``) method. Accepts a single tool or
 a list; mutates in place and returns the same object(s).
 """

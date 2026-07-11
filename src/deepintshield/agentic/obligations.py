@@ -1,6 +1,6 @@
 """Shared digest + obligation helpers used by every framework adapter.
 
-Zero-data-retention: raw argument values never leave the process — only a
+Zero-data-retention: raw argument values never leave the process - only a
 SHA-256 digest of the canonicalised arguments is sent to the PDP.
 """
 

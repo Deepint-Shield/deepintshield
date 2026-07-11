@@ -114,7 +114,7 @@ def _schema_to_model(
 def _json_type_to_python(prop: dict[str, Any]) -> Any:
     """Map a single JSON Schema property to a Python type for Pydantic.
 
-    Lossy on purpose — frameworks vary in how they consume nested schemas.
+    Lossy on purpose - frameworks vary in how they consume nested schemas.
     Falls back to ``Any`` when in doubt.
     """
     from typing import Any as _Any
@@ -122,7 +122,7 @@ def _json_type_to_python(prop: dict[str, Any]) -> Any:
 
     t = prop.get("type")
     if isinstance(t, list):
-        # union — pick the first non-null type as a hint
+        # union - pick the first non-null type as a hint
         non_null = [x for x in t if x != "null"]
         t = non_null[0] if non_null else "string"
     if t == "string":

@@ -1,4 +1,4 @@
-"""CrewAI binder — native ``crewai.LLM`` (LiteLLM under the hood) pointed at
+"""CrewAI binder - native ``crewai.LLM`` (LiteLLM under the hood) pointed at
 the gateway."""
 
 from __future__ import annotations

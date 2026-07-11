@@ -1,4 +1,4 @@
-"""OpenAI Agents SDK — register the gateway client as the SDK default, then
+"""OpenAI Agents SDK - register the gateway client as the SDK default, then
 write completely native Agent/Runner code."""
 import asyncio
 

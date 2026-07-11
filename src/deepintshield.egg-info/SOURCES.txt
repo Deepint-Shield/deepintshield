@@ -36,12 +36,17 @@ src/deepintshield/agentic/integrations/__init__.py
 src/deepintshield/agentic/integrations/_common.py
 src/deepintshield/agentic/integrations/autogen.py
 src/deepintshield/agentic/integrations/crewai.py
+src/deepintshield/agentic/integrations/google_adk.py
+src/deepintshield/agentic/integrations/hermes.py
 src/deepintshield/agentic/integrations/langchain.py
 src/deepintshield/agentic/integrations/langgraph.py
 src/deepintshield/agentic/integrations/litellm.py
 src/deepintshield/agentic/integrations/llamaindex.py
 src/deepintshield/agentic/integrations/openai_agents.py
+src/deepintshield/agentic/integrations/openclaw.py
 src/deepintshield/agentic/integrations/pydanticai.py
+src/deepintshield/agentic/integrations/strands.py
+src/deepintshield/agentic/integrations/temporal.py
 src/deepintshield/frameworks/__init__.py
 src/deepintshield/frameworks/autogen.py
 src/deepintshield/frameworks/crewai.py

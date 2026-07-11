@@ -4,15 +4,15 @@ The per-framework adapters gate tools *when the developer calls* ``govern()`` /
 ``guard()``. That still leaves a gap: nothing stops code from skipping that call
 and running the agent directly. ``install_all`` closes it by monkey-patching each
 framework's build/execute boundary the moment a DeepintShield client is created,
-so a tool/graph can't run ungoverned — the developer no longer has to remember.
+so a tool/graph can't run ungoverned - the developer no longer has to remember.
 
 Design rules every framework installer follows:
-  * **Lazy engine** — takes a ``get_engine`` callable resolved on first use, so
+  * **Lazy engine** - takes a ``get_engine`` callable resolved on first use, so
     installing at client construction never forces the agentic surface to build.
-  * **Only if imported** — we patch a framework only when it's already in
+  * **Only if imported** - we patch a framework only when it's already in
     ``sys.modules`` (never force-import a dep the user isn't using).
-  * **Idempotent** — re-installing re-binds the provider, never double-wraps.
-  * **Fail-open on infra, fail-CLOSED on a verdict** — a gateway hiccup must not
+  * **Idempotent** - re-installing re-binds the provider, never double-wraps.
+  * **Fail-open on infra, fail-CLOSED on a verdict** - a gateway hiccup must not
     break the app, but a DENY must still block. Each installer swallows
     infrastructure errors and re-raises ``GuardrailDenied`` / approval timeouts.
 

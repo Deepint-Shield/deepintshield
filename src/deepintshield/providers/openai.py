@@ -15,7 +15,7 @@ def build_client(shield: "DeepintShield", *, passthrough: bool = False, **kwargs
     ``prompt_cache_key`` to outbound chat completion requests so OpenAI's
     automatic prompt cache partitions cleanly per logical prefix. Caching
     itself is governed by the workspace-level Provider Prompt Caching switch
-    on the gateway — if the workspace has it disabled the gateway strips the
+    on the gateway - if the workspace has it disabled the gateway strips the
     key before forwarding.
 
     Callers passing their own ``http_client`` are respected (no hook is

@@ -1,4 +1,4 @@
-"""Generic OIDC credential — Client-Credentials grant against any OIDC IdP
+"""Generic OIDC credential - Client-Credentials grant against any OIDC IdP
 that publishes a JWKS endpoint (Okta, Auth0, Keycloak, …).
 
 Used when the platform VK is bound to a ``generic_oidc`` identity provider on

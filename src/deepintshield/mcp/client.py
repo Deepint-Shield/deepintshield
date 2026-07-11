@@ -21,8 +21,8 @@ class MCPClient:
 
     Exposes three layers, smallest first:
 
-    1. ``call(server, tool, **args)`` — execute one tool by name.
-    2. ``list_tools()`` — discover tools (requires admin auth on the gateway).
+    1. ``call(server, tool, **args)`` - execute one tool by name.
+    2. ``list_tools()`` - discover tools (requires admin auth on the gateway).
     3. ``to_openai`` / ``to_anthropic`` / ``to_langchain`` adapters and their
        matching ``run_*`` dispatch helpers.
     """

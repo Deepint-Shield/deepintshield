@@ -1,5 +1,5 @@
 """Gate every tool node in a compiled LangGraph through the PDP. One line,
-no graph-shape change — existing invoke() code is unchanged."""
+no graph-shape change - existing invoke() code is unchanged."""
 from langchain_core.tools import tool
 from langgraph.prebuilt import create_react_agent
 

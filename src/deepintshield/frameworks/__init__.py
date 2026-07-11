@@ -1,4 +1,4 @@
-"""Framework binders (L1) — return *native* framework objects pre-pointed at
+"""Framework binders (L1) - return *native* framework objects pre-pointed at
 the DeepintShield gateway.
 
 These are the "drop-in" layer: the user keeps all of their framework code and
@@ -8,7 +8,7 @@ server-side). No DeepintShield types leak into their agent code.
 
 Accessed via ``shield.bind("crewai")`` or the convenience accessors
 ``shield.crewai()`` / ``shield.openai_agents()`` / ``shield.llamaindex()`` /
-``shield.autogen()`` — each returns a :class:`FrameworkBinder`.
+``shield.autogen()`` - each returns a :class:`FrameworkBinder`.
 """
 
 from __future__ import annotations

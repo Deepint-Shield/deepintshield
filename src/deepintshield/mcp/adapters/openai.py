@@ -35,7 +35,7 @@ def run_tool_calls(client: "MCPClient", tool_calls: Iterable[Any]) -> list[dict[
         try:
             result = client.call_qualified(name, arguments, call_id=call_id)
             content = result.text or "(empty result)"
-        except Exception as exc:  # noqa: BLE001 — surface full error to the model
+        except Exception as exc:  # noqa: BLE001 - surface full error to the model
             content = f"[MCP execution error] {exc}"
         messages.append(
             {

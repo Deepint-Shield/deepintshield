@@ -228,7 +228,7 @@ class DeepintShield:
 
     @property
     def agentic(self):
-        """``shield.agentic`` — tool-call enforcement (decide / @tool / per-
+        """``shield.agentic`` - tool-call enforcement (decide / @tool / per-
         framework wrappers). All Entra/identity/policy detail is auto-
         discovered from the gateway; the user passes only VK + base_url."""
         if self._agentic is None:
@@ -249,7 +249,7 @@ class DeepintShield:
 
     def _agent_token(self) -> str | None:
         """Best-effort agent identity token for transparent (L1) traffic.
-        Never raises — identity is a strengthening signal, not required."""
+        Never raises - identity is a strengthening signal, not required."""
         try:
             return self.agentic.engine.agent_token()
         except Exception:
@@ -279,7 +279,7 @@ class DeepintShield:
     ) -> dict[str, str]:
         """Return just the gateway header set (VK + attribution [+ identity]).
 
-        Parity helper for the Portkey-style ``createHeaders`` ergonomic — drop
+        Parity helper for the Portkey-style ``createHeaders`` ergonomic - drop
         it into any client's ``default_headers``/``extra_headers`` and point
         ``base_url`` at ``shield.endpoint(provider)``::
 

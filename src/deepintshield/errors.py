@@ -13,8 +13,12 @@ class DeepintShieldError(Exception):
     @classmethod
     def from_response(cls, status_code: int, payload: dict | None) -> "DeepintShieldError":
         error = (payload or {}).get("error", {})
+        # `error` may be a nested object ({"message": ...}) OR a plain string - the
+        # gateway's FEATURE_LOCKED / feature-gate bodies put the human message
+        # directly in `error`. Handle both so a 402 never crashes the SDK.
+        error_message = error.get("message") if isinstance(error, dict) else error
         message = (
-            error.get("message")
+            error_message
             or (payload or {}).get("message")
             or f"DeepintShield request failed with status {status_code}"
         )

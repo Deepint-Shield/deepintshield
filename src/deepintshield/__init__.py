@@ -1,5 +1,5 @@
 """
-DeepintShield — unified Python SDK.
+DeepintShield - unified Python SDK.
 
 Quick start
 -----------

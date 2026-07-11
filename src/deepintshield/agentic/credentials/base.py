@@ -1,4 +1,4 @@
-"""AgentCredential — the protocol every identity provider implementation
+"""AgentCredential - the protocol every identity provider implementation
 follows. The engine only ever calls ``get_token()`` on the abstract type;
 the concrete provider (Entra / ZeroID / OIDC) handles the wire details.
 """
@@ -32,7 +32,7 @@ class StaticAgentCredential:
     """Returns a pre-baked token verbatim. For local dev / tests where you
     want a known-good token without running an FIC exchange.
 
-    Do not use in production — the token won't refresh.
+    Do not use in production - the token won't refresh.
     """
 
     def __init__(self, token: str, provider_type: str = "static") -> None:

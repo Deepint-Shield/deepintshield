@@ -1,4 +1,4 @@
-"""Wire-shape types for the agentic (PDP) layer — the JSON contracts the
+"""Wire-shape types for the agentic (PDP) layer - the JSON contracts the
 SDK exchanges with the gateway's agentic-security endpoints.
 
 Kept Pydantic-only so the SDK doesn't pull in the framework's Go types or
@@ -28,20 +28,20 @@ class ContextBag(BaseModel):
     rag_provenance: str = ""
     cost_used: float = 0.0
     recovery_cost: str = ""
-    # "src:<sha256[:16]>" of the tool's implementation — binds the decision to
+    # "src:<sha256[:16]>" of the tool's implementation - binds the decision to
     # the actual code (server folds it into the cache key + feeds the code-threat
     # scan). Empty for callers that don't supply it (zero impact).
     tool_fingerprint: str = ""
     # OWASP-gap ABAC signals (optional; all default off so they never perturb the
-    # cache). memory_integrity (T1) — agent memory failed validation;
-    # hallucination_risk (T5) — 0..1 faithfulness risk; goal_drift (T7) — behaviour
-    # diverged from the declared goal; comm_integrity (T12) — inter-agent message
+    # cache). memory_integrity (T1) - agent memory failed validation;
+    # hallucination_risk (T5) - 0..1 faithfulness risk; goal_drift (T7) - behaviour
+    # diverged from the declared goal; comm_integrity (T12) - inter-agent message
     # failed auth. (delegation_depth (T14) is computed server-side from the chain.)
     memory_integrity: bool = False
     hallucination_risk: float = 0.0
     goal_drift: bool = False
     comm_integrity: bool = False
-    # output_manipulation (T15) — the agent's response tripped the output guardrail
+    # output_manipulation (T15) - the agent's response tripped the output guardrail
     # (injected link / fraudulent instruction). (approval_pressure (T10) is computed
     # server-side from the workspace's approval volume.)
     output_manipulation: bool = False
@@ -68,7 +68,7 @@ class DelegationContext(BaseModel):
     session_id: str = ""
     # Optional agent prompt/instruction, supplied for SCAN ONLY. The gateway runs
     # it through the prompt guardrail (injection / PII) at the PDP boundary and
-    # then discards it — it is never stored (zero-data-retention). Omit it and the
+    # then discards it - it is never stored (zero-data-retention). Omit it and the
     # decision is unchanged; supply it to have a malicious instruction that drives
     # this tool call caught inline (sets prompt_injection / prompt_pii signals).
     prompt: str = ""
@@ -100,7 +100,7 @@ class VKCredentialInfo(BaseModel):
     """Public discovery info the SDK fetches once from
     GET /api/agentic-security/vk-credential-info.
 
-    Contains NO secrets — only the OIDC discovery values the SDK needs to
+    Contains NO secrets - only the OIDC discovery values the SDK needs to
     build the right AgentCredential implementation for whichever identity
     provider the VK is bound to.
     """

@@ -1,11 +1,11 @@
-"""Entra Agent ID credential — Federated Identity Credential exchange.
+"""Entra Agent ID credential - Federated Identity Credential exchange.
 
 Flow per call (only when the cached token is missing or near expiry):
 
     1. Get a self-token from the local Managed Identity for audience
        ``api://AzureADTokenExchange``. Uses DefaultAzureCredential so the MI
        binding is auto-detected from the host (AKS workload identity, App
-       Service identity, VM identity, etc.) — no client_id needs to appear
+       Service identity, VM identity, etc.) - no client_id needs to appear
        in user code.
 
     2. POST that as the ``client_assertion`` to the blueprint's token
@@ -43,7 +43,7 @@ class EntraAgentCredential:
     """Concrete AgentCredential for Microsoft Entra Agent ID blueprints.
 
     Constructed via :class:`AgenticEngine` from the values discovered at
-    GET /api/agentic-security/vk-credential-info — developers should not
+    GET /api/agentic-security/vk-credential-info - developers should not
     instantiate this directly except for overrides.
     """
 
@@ -87,7 +87,7 @@ class EntraAgentCredential:
         if cached:
             return cached
         with self._cache.lock():
-            # Re-check inside lock — another thread may have refreshed.
+            # Re-check inside lock - another thread may have refreshed.
             cached = self._cache.get()
             if cached:
                 return cached

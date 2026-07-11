@@ -1,4 +1,4 @@
-"""OpenAI Agents SDK binder — native ``AsyncOpenAI`` pointed at the gateway,
+"""OpenAI Agents SDK binder - native ``AsyncOpenAI`` pointed at the gateway,
 plus an ``apply()`` shortcut that registers it as the SDK's default client so
 every Agent routes through DeepintShield with no further wiring.
 """

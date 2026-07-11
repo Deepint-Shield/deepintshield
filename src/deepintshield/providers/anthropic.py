@@ -15,7 +15,7 @@ def build_client(shield: "DeepintShield", *, passthrough: bool = False, **kwargs
     portions of the prompt (``system`` + ``tools`` by default) with Anthropic's
     ``cache_control: {"type": "ephemeral"}`` so Anthropic reuses KV state for
     the prefix on repeat calls. Caching itself is governed by the workspace's
-    Provider Prompt Caching switch — disabled workspaces have the markers
+    Provider Prompt Caching switch - disabled workspaces have the markers
     stripped at the gateway before they reach Anthropic.
 
     Pass a custom ``http_client`` to bypass injection entirely; the SDK trusts

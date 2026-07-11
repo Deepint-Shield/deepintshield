@@ -1,8 +1,8 @@
-"""``shield_tool`` — the one-line wrapper that turns any Python function into
+"""``shield_tool`` - the one-line wrapper that turns any Python function into
 a PEP-gated tool, plus a process-global default client for the common
 "one client, many decorators" case.
 
-The decorator is import-safe even when no client is bound — it raises a clear
+The decorator is import-safe even when no client is bound - it raises a clear
 error at first call rather than at import time, so tools can be declared in
 modules that don't always have a client available.
 """
@@ -30,7 +30,7 @@ def _resolve_engine(client: object):
     target = client if client is not None else _default_client
     if target is None:
         raise RuntimeError(
-            "shield_tool requires a client — pass client=… or call "
+            "shield_tool requires a client - pass client=… or call "
             "deepintshield.agentic.set_default_client(shield) once at process start."
         )
     agentic = getattr(target, "agentic", None)

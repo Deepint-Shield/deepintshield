@@ -1,4 +1,4 @@
-"""PydanticAI enforcement — gate the function tools registered on a
+"""PydanticAI enforcement - gate the function tools registered on a
 ``pydantic_ai.Agent`` by wrapping each tool's underlying function.
 
 PydanticAI keeps registered tools in an internal registry whose attribute

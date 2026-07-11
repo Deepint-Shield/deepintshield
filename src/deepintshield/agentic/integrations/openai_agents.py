@@ -1,4 +1,4 @@
-"""OpenAI Agents SDK enforcement — gate each ``FunctionTool`` on an Agent (or
+"""OpenAI Agents SDK enforcement - gate each ``FunctionTool`` on an Agent (or
 a bare list of tools) by wrapping its async ``on_invoke_tool`` callable.
 Mutates in place and returns the same object.
 """
@@ -17,7 +17,7 @@ log = logging.getLogger(__name__)
 def enforce(get_engine: Any) -> bool:
     """Non-bypassable OpenAI-Agents enforcement: OpenAI-Agents tools hold their
     ``on_invoke_tool`` per-instance (no class method to patch), so we guard at the
-    ``Runner`` boundary — instrument every agent's tools just before it runs.
+    ``Runner`` boundary - instrument every agent's tools just before it runs.
     Idempotent + fail-open. Returns True if installed."""
     try:
         from agents import Runner
@@ -82,7 +82,7 @@ def _wrap_tool(tool: Any, engine: Any) -> None:
 
     @functools.wraps(original)
     async def wrapped(*args: Any, **kwargs: Any) -> Any:
-        # on_invoke_tool is (context, input_json) — gate on the input payload.
+        # on_invoke_tool is (context, input_json) - gate on the input payload.
         resolve(engine, name, args, kwargs)
         return await original(*args, **kwargs)
 

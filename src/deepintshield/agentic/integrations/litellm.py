@@ -1,4 +1,4 @@
-"""LiteLLM enforcement — gate every ``litellm.completion`` / ``acompletion`` call
+"""LiteLLM enforcement - gate every ``litellm.completion`` / ``acompletion`` call
 through the PDP's prompt guardrail (injection / PII) before the model is called.
 
 LiteLLM is an LLM SDK, not a tool framework, so "enforce in the SDK" means the
@@ -7,7 +7,7 @@ prompt boundary: we run the last user message through the agent-prompt guardrail
 prompt is scan-only and never stored (zero-data-retention). Fail-OPEN on infra
 (a gateway hiccup must not break completions) but fail-CLOSED on a verdict.
 
-Cooperative defense-in-depth — the gateway stays the authoritative boundary.
+Cooperative defense-in-depth - the gateway stays the authoritative boundary.
 """
 
 from __future__ import annotations

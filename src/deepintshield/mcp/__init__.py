@@ -11,7 +11,7 @@ Quick start
 
     shield = DeepintShield(virtual_key="sk-bf-...", base_url="http://localhost:8080")
 
-    # Direct call — works for any tool on any connected server.
+    # Direct call - works for any tool on any connected server.
     result = shield.mcp.call(
         server="DeepWiki",
         tool="ask_question",

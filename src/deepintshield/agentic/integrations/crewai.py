@@ -1,4 +1,4 @@
-"""CrewAI enforcement — gate each CrewAI ``BaseTool`` so ``decide()`` runs
+"""CrewAI enforcement - gate each CrewAI ``BaseTool`` so ``decide()`` runs
 before the tool body. Accepts a single tool or a list; mutates in place and
 returns the same object(s).
 """
@@ -15,7 +15,7 @@ log = logging.getLogger(__name__)
 
 def enforce(get_engine: Any) -> bool:
     """Non-bypassable CrewAI enforcement: patch ``BaseTool.run`` so every CrewAI
-    tool is gated by the PDP at execution — no per-tool ``govern()`` needed.
+    tool is gated by the PDP at execution - no per-tool ``govern()`` needed.
     Idempotent + fail-open. Returns True if installed."""
     base = None
     for mod, cls in (("crewai.tools", "BaseTool"), ("crewai.tools.base_tool", "BaseTool")):

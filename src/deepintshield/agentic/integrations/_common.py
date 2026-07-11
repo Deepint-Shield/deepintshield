@@ -37,7 +37,7 @@ def source_fingerprint(fn: Any) -> str:
     """A ``"src:<sha256[:16]>"`` digest of the function's source so the platform
     binds to the actual code: editing the body changes the fingerprint, which
     re-decides (code-bound caching) and feeds the registration-time threat scan.
-    Best-effort — returns "" when source is unavailable (C/builtins/REPL). Unwraps
+    Best-effort - returns "" when source is unavailable (C/builtins/REPL). Unwraps
     decorators so we hash the real implementation, not a wrapper."""
     try:
         src = inspect.getsource(inspect.unwrap(fn))
@@ -104,7 +104,7 @@ def install_method_guard(
     impl_fn: Callable[[Any], Any] | None = None,
 ) -> bool:
     """Patch ``cls.attr`` (a method taking ``self``) so every call gates through
-    the PDP first — the non-bypassable equivalent of wrapping each tool instance.
+    the PDP first - the non-bypassable equivalent of wrapping each tool instance.
 
     ``name_fn(self)`` → the governed tool name; ``impl_fn(self)`` → the underlying
     callable to fingerprint (defaults to ``self``). Idempotent (re-binds the engine
@@ -132,7 +132,7 @@ def install_method_guard(
         try:
             return _gate_enforce(provider(), name, args, kwargs, tool_fingerprint=fp)
         except (GuardrailDenied, GuardrailApprovalPending):
-            raise  # a verdict blocks — never swallowed
+            raise  # a verdict blocks - never swallowed
         except Exception:
             return kwargs  # infra hiccup → fail-open, don't break the app
 

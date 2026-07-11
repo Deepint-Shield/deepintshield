@@ -1,4 +1,4 @@
-"""Agent blueprint manifest — a framework-agnostic description of an agent's
+"""Agent blueprint manifest - a framework-agnostic description of an agent's
 declared tool surface (nodes / tools / edges / MCP servers), extracted from the
 compiled graph or agent object so it can be registered with the server BEFORE
 the run.
@@ -33,7 +33,7 @@ class AgentManifest:
     # name → "src:<sha256[:16]>" (persisted, declares the code identity for drift)
     tool_fingerprints: dict[str, str] = field(default_factory=dict)
     # name → raw source, sent ONCE at govern() so the gateway can threat-scan it;
-    # the server scans then discards it (never persisted — ZDR preserved).
+    # the server scans then discards it (never persisted - ZDR preserved).
     tool_sources: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -64,13 +64,13 @@ def describe(target: Any) -> AgentManifest:
     """Auto-detect the framework of ``target`` and extract its declared tool
     surface. Mirrors ``AgenticSurface._dispatch`` so ``govern`` and ``guard``
     agree on the framework."""
-    # Compiled LangGraph — dict-shaped `.nodes` + `.invoke`.
+    # Compiled LangGraph - dict-shaped `.nodes` + `.invoke`.
     if isinstance(getattr(target, "nodes", None), dict) and hasattr(target, "invoke"):
         return _describe_langgraph(target)
-    # PydanticAI — internal function-tool registry.
+    # PydanticAI - internal function-tool registry.
     if any(hasattr(target, a) for a in ("_function_tools", "_function_toolset")):
         return _describe_tools(target, "pydanticai")
-    # OpenAI Agents SDK — tools expose async `on_invoke_tool`.
+    # OpenAI Agents SDK - tools expose async `on_invoke_tool`.
     sample = target[0] if isinstance(target, (list, tuple)) and target else target
     oa_tools = getattr(target, "tools", None)
     if hasattr(sample, "on_invoke_tool") or (

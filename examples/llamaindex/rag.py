@@ -1,4 +1,4 @@
-"""Guard a LlamaIndex retriever — post-retrieval chunk filtering through the
+"""Guard a LlamaIndex retriever - post-retrieval chunk filtering through the
 gateway. LlamaIndex returns NodeWithScore objects, so a `chunk_mapper` maps
 each node to the chunk shape the gateway expects."""
 from llama_index.core import Document, Settings, VectorStoreIndex

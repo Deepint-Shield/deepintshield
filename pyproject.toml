@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "deepintshield"
-version = "2.4.0"
-description = "Unified Python SDK for routing chat, RAG, agentic tool-gating, identity, and MCP traffic through DeepintShield — drop-in across the top agentic frameworks."
+version = "2.5.1"
+description = "Unified Python SDK for routing chat, RAG, agentic tool-gating, identity, and MCP traffic through DeepintShield - drop-in across the top agentic frameworks."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Apache-2.0" }
@@ -36,6 +36,9 @@ crewai = ["crewai>=0.70.0"]
 openai-agents = ["openai-agents>=0.0.10", "openai>=1.75.0"]
 llamaindex = ["llama-index>=0.11.0"]
 autogen = ["autogen-agentchat>=0.4.0", "autogen-ext[openai]>=0.4.0"]
+temporal = ["temporalio>=1.7.0"]
+strands = ["strands-agents>=0.1.0"]
+google-adk = ["google-adk>=0.1.0"]
 azure = ["azure-identity>=1.16.0"]
 mcp = ["pydantic>=2.0"]
 all = [
@@ -53,6 +56,9 @@ all = [
   "llama-index>=0.11.0",
   "autogen-agentchat>=0.4.0",
   "autogen-ext[openai]>=0.4.0",
+  "temporalio>=1.7.0",
+  "strands-agents>=0.1.0",
+  "google-adk>=0.1.0",
   "azure-identity>=1.16.0",
 ]
 dev = [

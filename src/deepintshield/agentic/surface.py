@@ -1,4 +1,4 @@
-"""AgenticSurface — the ``shield.agentic`` accessor.
+"""AgenticSurface - the ``shield.agentic`` accessor.
 
 Bundles the PDP engine, the ``tool`` decorator, a direct ``decide`` probe,
 and the per-framework enforcement adapters. All of them funnel through the
@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
 
 class AgenticSurface:
-    """``shield.agentic`` — agentic (PDP) tool gating across frameworks."""
+    """``shield.agentic`` - agentic (PDP) tool gating across frameworks."""
 
     def __init__(self, parent: "DeepintShield") -> None:
         self._parent = parent
@@ -35,7 +35,7 @@ class AgenticSurface:
 
     def enforce(self) -> list[str]:
         """Install enforcement guards so every framework's tools/graphs are gated
-        without an explicit ``govern()`` — ``compile()``/tool execution always
+        without an explicit ``govern()`` - ``compile()``/tool execution always
         passes through the PDP. Auto-called for any framework already imported;
         call it again after importing a framework later
         (e.g. ``import crewai; shield.agentic.enforce()``). Best-effort + fail-open;
@@ -68,7 +68,7 @@ class AgenticSurface:
         prompt: str = "",
     ) -> Decision:
         """Call the PDP and return the raw :class:`Decision` (does not raise on
-        DENY — use :meth:`tool` or a framework adapter for that).
+        DENY - use :meth:`tool` or a framework adapter for that).
 
         Either pass a fully-formed ``DelegationContext`` or the convenience
         ``tool=…, args=…`` form. Pass ``prompt=…`` to have the agent's current
@@ -120,7 +120,7 @@ class AgenticSurface:
     def guard(self, target: Any = None) -> Any:
         """The single entry point for agentic tool enforcement.
 
-        * ``shield.agentic.guard()`` — no argument — returns a native
+        * ``shield.agentic.guard()`` - no argument - returns a native
           LangChain/LangGraph callback handler. Attach it once via
           ``config={"callbacks": [shield.agentic.guard()]}`` and *every* tool the
           agent calls is gated by the PDP. No per-tool code, no parameters: the
@@ -128,7 +128,7 @@ class AgenticSurface:
           policy and identity server-side. This is the recommended path for
           anything built on LangChain (chains, agents, LangGraph, prebuilt
           ReAct agents).
-        * ``shield.agentic.guard(target)`` — instrument a framework object in
+        * ``shield.agentic.guard(target)`` - instrument a framework object in
           place (a compiled LangGraph, a CrewAI tool / list of tools, an OpenAI
           Agents ``Agent`` or a PydanticAI ``Agent``) and return it. Equivalent
           to calling the matching adapter method, but auto-detected so callers
@@ -142,24 +142,24 @@ class AgenticSurface:
         """The full server-driven entry point: **register + instrument** a
         framework agent/graph in one call.
 
-        1. **Describe** — auto-discover the agent's declared tool surface
+        1. **Describe** - auto-discover the agent's declared tool surface
            (nodes / tools / edges) from the compiled object, framework-agnostic.
-        2. **Register** — POST that blueprint to the server BEFORE the run so the
+        2. **Register** - POST that blueprint to the server BEFORE the run so the
            server holds the declared topology (full-graph viz, policy
            pre-validation, declared-vs-observed drift). Best-effort, non-fatal.
-        3. **Instrument** — gate every tool/node through the PDP (same as
+        3. **Instrument** - gate every tool/node through the PDP (same as
            :meth:`guard`).
 
         The developer keeps their tools/graph in plain third-party shape and adds
         exactly one line: ``app = shield.agentic.govern(app)``. Discovery, policy
         and the decision all live server-side. (For MCP tools routed through the
-        gateway no client code is needed at all — they are governed in transit.)
+        gateway no client code is needed at all - they are governed in transit.)
         """
         try:
             from .manifest import describe
 
             self.engine.register_blueprint(describe(target))
-        except Exception:  # describe/register is best-effort — never block govern
+        except Exception:  # describe/register is best-effort - never block govern
             pass
         return self._dispatch(target)
 
@@ -174,13 +174,13 @@ class AgenticSurface:
 
     def _dispatch(self, target: Any) -> Any:
         """Auto-route a framework object to its in-place adapter."""
-        # Compiled LangGraph — dict-shaped `.nodes` is the reliable marker.
+        # Compiled LangGraph - dict-shaped `.nodes` is the reliable marker.
         if isinstance(getattr(target, "nodes", None), dict) and hasattr(target, "invoke"):
             return self.langgraph(target)
-        # PydanticAI agent — keeps tools in an internal `_function_tools(et)` registry.
+        # PydanticAI agent - keeps tools in an internal `_function_tools(et)` registry.
         if any(hasattr(target, a) for a in ("_function_tools", "_function_toolset")):
             return self.pydanticai(target)
-        # OpenAI Agents SDK — tools expose an async `on_invoke_tool` callable.
+        # OpenAI Agents SDK - tools expose an async `on_invoke_tool` callable.
         sample = target[0] if isinstance(target, (list, tuple)) and target else target
         oa_tools = getattr(target, "tools", None)
         if hasattr(sample, "on_invoke_tool") or (
@@ -188,7 +188,7 @@ class AgenticSurface:
         ):
             return self.openai_agents(target)
         # Everything else that looks like a tool / list of tools (CrewAI
-        # BaseTool, a LangChain StructuredTool, …) — gate the tool callable.
+        # BaseTool, a LangChain StructuredTool, …) - gate the tool callable.
         return self.crewai(target)
 
     # ── framework enforcement adapters (L2) ───────────────────────────────
@@ -222,6 +222,46 @@ class AgenticSurface:
         from .integrations.pydanticai import shield_agent
 
         return shield_agent(agent, engine=self.engine)
+
+    def temporal(self) -> Any:
+        """Return a Temporal ``Interceptor`` that gates every activity through
+        the PDP. Attach it once: ``Worker(..., interceptors=[shield.agentic.temporal()])``."""
+        from .integrations.temporal import interceptor
+
+        return interceptor(self.engine)
+
+    def strands(self) -> Any:
+        """Return an AWS Strands ``HookProvider`` that gates every tool
+        invocation through the PDP. ``Agent(..., hooks=[shield.agentic.strands()])``."""
+        from .integrations.strands import hook_provider
+
+        return hook_provider(self.engine)
+
+    def google_adk(self) -> Any:
+        """Return a Google ADK ``BasePlugin`` that gates every tool call through
+        the PDP app-wide. ``InMemoryRunner(..., plugins=[shield.agentic.google_adk()])``."""
+        from .integrations.google_adk import plugin
+
+        return plugin(self.engine)
+
+    def hermes(self, ctx: Any) -> bool:
+        """Install the PDP hooks on a Hermes plugin context. Call from your
+        Hermes plugin's ``register(ctx)``: ``shield.agentic.hermes(ctx)``."""
+        from .integrations.hermes import install
+
+        return install(ctx, self.engine)
+
+    def openclaw_config(self, *, gateway_url: str = "", models: Any = None) -> dict:
+        """Return the OpenClaw ``models.providers`` config block that routes all
+        model traffic through the gateway (Layer-1, zero-code governance:
+        semantic cache, coalescing, guardrails, budgets, cost analytics). Merge
+        it into ``openclaw.json`` and set ``agents.defaults.model.primary`` to a
+        ``deepintshield/<model>`` id. In-process tool governance (Layer 2) needs
+        the TypeScript plugin - Python can't be embedded in OpenClaw's Node
+        gateway; see docs/examples for the plugin stub."""
+        from .integrations.openclaw import provider_config
+
+        return provider_config(self.engine, gateway_url=gateway_url, models=models)
 
 
 __all__ = ["AgenticSurface"]

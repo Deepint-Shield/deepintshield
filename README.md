@@ -4,9 +4,10 @@ Unified Python SDK for DeepintShield - one import, any provider, any agent frame
 
 `deepintshield` lets you keep writing idiomatic OpenAI / Anthropic / Bedrock /
 Google GenAI code **and** native agent-framework code (LangGraph, CrewAI,
-OpenAI Agents SDK, LlamaIndex, AutoGen, PydanticAI) while automatically routing
-traffic through the DeepintShield gateway for guardrails, RAG filtering, agentic
-tool control, and agent identity.
+OpenAI Agents SDK, LlamaIndex, AutoGen, PydanticAI, Temporal, AWS Strands,
+Google ADK, Hermes Agent, OpenClaw) while automatically routing traffic through
+the DeepintShield gateway for guardrails, RAG filtering, agentic tool control,
+and agent identity.
 
 You pass **only two things - a virtual key and a base URL.** Everything else -
 the Entra / ZeroID / OIDC identity binding, tenant, scopes, and policy - is
@@ -46,6 +47,9 @@ pip install 'deepintshield[llamaindex]'
 pip install 'deepintshield[autogen]'             # AutoGen / AG2
 pip install 'deepintshield[litellm]'
 pip install 'deepintshield[pydanticai]'
+pip install 'deepintshield[temporal]'            # Temporal durable-agent interceptor
+pip install 'deepintshield[strands]'             # AWS Strands hook provider
+pip install 'deepintshield[google-adk]'          # Google ADK plugin
 pip install 'deepintshield[azure]'               # azure-identity for Entra agent identity
 pip install 'deepintshield[mcp]'                # MCP utilities only
 pip install 'deepintshield[all]'                # everything
@@ -316,6 +320,50 @@ shield.agentic.guard(crewai_tools)     # CrewAI BaseTools
 shield.agentic.guard(openai_agent)     # OpenAI Agents FunctionTools
 shield.agentic.guard(pydantic_agent)   # PydanticAI agent
 ```
+
+### Durable & native-hook frameworks (Temporal, Strands, Google ADK, Hermes, OpenClaw)
+
+For frameworks that expose a first-class hook / plugin / interceptor system,
+the adapter is a **single object you attach at construction** — no monkey-patch,
+no per-tool code. Each one rides the framework's own extension point and reuses
+the same PDP core, so verdicts (ALLOW / MASK / REQUIRE_APPROVAL / DENY),
+grants, fingerprinting and audit are identical to every other integration.
+
+```python
+# Temporal — one interceptor gates every activity (runs outside the workflow
+# sandbox, so a DENY raises a NON-retryable ApplicationError):
+worker = Worker(client, task_queue="q", activities=[...],
+                interceptors=[shield.agentic.temporal()])
+
+# AWS Strands — one HookProvider gates every tool invocation:
+agent = Agent(model=..., tools=[...], hooks=[shield.agentic.strands()])
+
+# Google ADK — one app-level plugin gates every tool across every agent:
+runner = InMemoryRunner(agent=agent, plugins=[shield.agentic.google_adk()])
+
+# Hermes Agent (NousResearch) — call from your Hermes plugin's register(ctx):
+def register(ctx):
+    shield.agentic.hermes(ctx)          # pre_tool_call PEP over built-in/plugin/MCP tools
+```
+
+**OpenClaw** (Node/TS runtime) integrates in two layers: the LLM leg is
+zero-code config, generated from Python —
+
+```python
+cfg = shield.agentic.openclaw_config(models=[{"id": "gpt-4o-mini", ...}])
+# merge cfg into openclaw.json; set agents.defaults.model.primary = "deepintshield/gpt-4o-mini"
+```
+
+— and in-process tool governance ships as a thin TypeScript plugin calling the
+same REST `/decide` API (see [`examples/openclaw/`](examples/openclaw/README.md)).
+
+| Framework | Attach point | Native hook used |
+|---|---|---|
+| Temporal | `interceptors=[shield.agentic.temporal()]` | `ActivityInboundInterceptor.execute_activity` |
+| AWS Strands | `hooks=[shield.agentic.strands()]` | `BeforeToolInvocationEvent` |
+| Google ADK | `plugins=[shield.agentic.google_adk()]` | `BasePlugin.before_tool_callback` |
+| Hermes Agent | `shield.agentic.hermes(ctx)` | plugin `pre_tool_call` hook |
+| OpenClaw | config + TS plugin | `models.providers` + `before_tool_call` |
 
 ### Explicit decorator / decision probe
 

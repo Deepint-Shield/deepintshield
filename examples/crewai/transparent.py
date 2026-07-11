@@ -1,5 +1,5 @@
 """CrewAI with all model traffic routed through DeepintShield. Native CrewAI
-code — the only DeepintShield line is the LLM binder."""
+code - the only DeepintShield line is the LLM binder."""
 from crewai import Agent, Crew, Task
 
 from deepintshield import DeepintShield

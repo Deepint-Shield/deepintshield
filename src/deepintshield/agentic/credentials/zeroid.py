@@ -1,9 +1,9 @@
-"""ZeroID credential — RFC 8693 token exchange.
+"""ZeroID credential - RFC 8693 token exchange.
 
 ZeroID's wire format follows OAuth 2.0 Token Exchange (RFC 8693) with a
 standard ``act`` claim chain and SPIFFE/WIMSE identity URIs. The gateway's
 broker verifies the resulting JWT against ZeroID's JWKS the same way it does
-for Entra — the SDK side is just the exchange dance.
+for Entra - the SDK side is just the exchange dance.
 
 For a full integration you'll typically swap in the vendor SDK's own token
 provider here; this implementation is the minimal HTTP shape that works for

@@ -1,4 +1,4 @@
-"""PydanticAI binder — native ``OpenAIChatModel`` whose provider points at the
+"""PydanticAI binder - native ``OpenAIChatModel`` whose provider points at the
 gateway. Headers ride on an injected async httpx client since the provider
 takes a model + provider rather than loose ``default_headers``.
 """

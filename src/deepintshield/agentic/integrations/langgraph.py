@@ -1,4 +1,4 @@
-"""LangGraph enforcement — gate every node in a compiled graph through the PDP.
+"""LangGraph enforcement - gate every node in a compiled graph through the PDP.
 
 Drop-in: no per-tool decorator, no graph-shape change. Mutates the graph in
 place and returns it so existing ``invoke()`` code is unchanged. The node name
@@ -6,7 +6,7 @@ is the governed tool name the PDP checks.
 
 Interception is done at the node's underlying callable. In current LangGraph a
 compiled node is a ``PregelNode`` whose ``.bound`` is a ``RunnableCallable``
-holding the user function in ``.func`` / ``.afunc`` — wrapping those intercepts
+holding the user function in ``.func`` / ``.afunc`` - wrapping those intercepts
 every invocation regardless of how the Pregel loop dispatches it (the older
 approach of wrapping ``runnable.invoke`` silently missed plain function nodes,
 because ``PregelNode.runnable`` is ``None``). We wrap ``func``/``afunc`` first
@@ -44,7 +44,7 @@ def shield_graph(graph: Any, *, engine: Any) -> Any:
         if name in _RESERVED:
             continue
         if not _instrument_node(engine, name, node):
-            log.warning("shield_graph: could not gate node %r — skipped", name)
+            log.warning("shield_graph: could not gate node %r - skipped", name)
     return graph
 
 
@@ -53,7 +53,7 @@ def _instrument_node(engine: Any, name: str, node: Any) -> bool:
     True once at least one entry point was wrapped (or was already wrapped)."""
     holders = [getattr(node, "bound", None), getattr(node, "runnable", None), node]
     # Idempotency: if any entry point is already gated (e.g. the compile-guard ran,
-    # then govern() was called too), the node is governed — do NOT add a second,
+    # then govern() was called too), the node is governed - do NOT add a second,
     # coarser invoke-level gate (which would re-key on the node label).
     for holder in holders:
         if holder is None:
@@ -81,7 +81,7 @@ def _instrument_node(engine: Any, name: str, node: Any) -> bool:
                     pass
         if wrapped:
             return True
-    # Fallback: ToolNode / custom runnable — wrap invoke / ainvoke.
+    # Fallback: ToolNode / custom runnable - wrap invoke / ainvoke.
     for holder in holders:
         if holder is None:
             continue
@@ -129,7 +129,7 @@ def enforce(get_engine: Any) -> bool:
     """Make enforcement non-bypassable: monkey-patch ``StateGraph.compile`` so
     EVERY compiled graph is governed (nodes gated + blueprint registered) before
     it can be invoked. Closes the "forgot to call ``govern()`` / kept a reference
-    to the un-governed object / invoked before governing" gap — after ``compile``,
+    to the un-governed object / invoked before governing" gap - after ``compile``,
     ``invoke`` always passes through the PDP.
 
     ``get_engine`` is a zero-arg callable returning the PDP engine, resolved
@@ -146,7 +146,7 @@ def enforce(get_engine: Any) -> bool:
     """
     try:
         from langgraph.graph.state import StateGraph
-    except Exception:  # langgraph not installed — nothing to guard
+    except Exception:  # langgraph not installed - nothing to guard
         return False
 
     existing = getattr(StateGraph, "compile", None)

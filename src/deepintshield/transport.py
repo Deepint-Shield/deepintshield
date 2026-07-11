@@ -1,10 +1,10 @@
-"""Transport layer (L1) — the single source of truth for pointing any
+"""Transport layer (L1) - the single source of truth for pointing any
 framework's *native* client at the DeepintShield gateway.
 
 The whole "minimal touch" promise rests here: a user keeps 100% of their
 framework code and only swaps where the model client points (``base_url``)
-and what key it carries (the virtual key). Everything else — attribution and,
-optionally, agent identity — is injected as headers in one place.
+and what key it carries (the virtual key). Everything else - attribution and,
+optionally, agent identity - is injected as headers in one place.
 
 ``connection()`` returns ``(base_url, headers)`` for manual wiring;
 ``http_client()`` returns a ready ``httpx.Client`` carrying the same. Both are
@@ -29,8 +29,8 @@ def connection_headers(
     extra: Optional[Mapping[str, str]] = None,
 ) -> dict[str, str]:
     """Build the header set the gateway needs for transparent traffic:
-    the VK, attribution (app / agent / requester), and — when ``identity`` is
-    set — a best-effort ``X-Agent-Token`` for agent identity.
+    the VK, attribution (app / agent / requester), and - when ``identity`` is
+    set - a best-effort ``X-Agent-Token`` for agent identity.
 
     ``identity=True`` triggers lazy agentic discovery (one network call) the
     first time; it defaults off so chat traffic never blocks on it.
@@ -58,7 +58,7 @@ def connection(
 ) -> tuple[str, dict[str, str]]:
     """Return ``(base_url, headers)`` for a guarded gateway route.
 
-    ``provider`` selects the route: ``"openai"`` (default, OpenAI-compatible —
+    ``provider`` selects the route: ``"openai"`` (default, OpenAI-compatible -
     every framework's OpenAI client posts to ``…/openai/chat/completions``),
     or any other gateway-mounted provider (``"anthropic"``, ``"genai"``,
     ``"bedrock"``, ``"litellm"`` …). The gateway routes by URL path, so no

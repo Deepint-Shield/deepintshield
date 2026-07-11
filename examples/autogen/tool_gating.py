@@ -1,4 +1,4 @@
-"""Gate an AutoGen FunctionTool through the PDP — decide() runs before the
+"""Gate an AutoGen FunctionTool through the PDP - decide() runs before the
 underlying callable executes."""
 from autogen_core.tools import FunctionTool
 

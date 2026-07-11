@@ -1,7 +1,7 @@
-"""AgenticEngine — the agentic (PDP) HTTP front door.
+"""AgenticEngine - the agentic (PDP) HTTP front door.
 
 Unlike the standalone ``deepintshield_agents`` client it was migrated from,
-the engine does not take its own ``gateway_url``/``virtual_key`` — it binds
+the engine does not take its own ``gateway_url``/``virtual_key`` - it binds
 to the parent :class:`~deepintshield.client.DeepintShield` and reuses its
 ``base_url``, ``virtual_key`` and shared httpx client. The user therefore
 passes *only* virtual key + base URL to ``DeepintShield`` and everything
@@ -42,7 +42,7 @@ _DISCOVERY_TTL_SECONDS = 3600.0
 
 class AgenticEngine:
     """Handles every interaction with the gateway's agentic-security
-    endpoints — discovery, decide, approval polling."""
+    endpoints - discovery, decide, approval polling."""
 
     def __init__(
         self,
@@ -109,7 +109,7 @@ class AgenticEngine:
             return self._agent_credential
         info = self.credential_info
         if not info.agent_configured:
-            # LLM-only VK — no agent token needed.
+            # LLM-only VK - no agent token needed.
             return None
         self._agent_credential = self._build_credential_for(info)
         return self._agent_credential
@@ -142,7 +142,7 @@ class AgenticEngine:
 
     def register_blueprint(self, manifest: object) -> Optional[str]:
         """Register the agent's declared tool surface (manifest) with the server
-        BEFORE the run — the server stores the declared topology for full-graph
+        BEFORE the run - the server stores the declared topology for full-graph
         visualization, policy pre-validation, and declared-vs-observed drift.
 
         Best-effort and NON-fatal: a registration failure (offline gateway, older
@@ -179,7 +179,7 @@ class AgenticEngine:
             )
             if resp.status_code == 200:
                 # Be defensive: a transient/non-JSON body (proxy error page, SPA
-                # fallback) must not crash the poll — treat it as "still pending"
+                # fallback) must not crash the poll - treat it as "still pending"
                 # and keep waiting until the deadline (→ GuardrailApprovalPending).
                 try:
                     state = resp.json().get("state", "pending")
@@ -203,7 +203,7 @@ class AgenticEngine:
     def agent_token(self) -> Optional[str]:
         """Return a fresh agent token, or None if this VK has no agent
         identity configured / the optional credential dep is missing. Never
-        raises — identity is a strengthening signal, not a hard requirement."""
+        raises - identity is a strengthening signal, not a hard requirement."""
         try:
             cred = self.agent_credential
         except ImportError as exc:
