@@ -7,8 +7,8 @@ from deepintshield import DeepintShield, build_chunk
 
 
 shield = DeepintShield.from_env()
-Settings.llm = shield.llamaindex().llm("gpt-4o-mini")
-Settings.embed_model = shield.llamaindex().embedder("text-embedding-3-small")
+Settings.llm = shield.bind("llamaindex").llm("gpt-4o-mini")
+Settings.embed_model = shield.bind("llamaindex").embedder("text-embedding-3-small")
 
 index = VectorStoreIndex.from_documents([
     Document(text="Visitors must be escorted at all times.", doc_id="d1"),

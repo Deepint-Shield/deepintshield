@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from ..errors import ErrorCode, _dependency_error
+
 if TYPE_CHECKING:
     from ..client import DeepintShield
 
@@ -16,7 +18,11 @@ class LiteLLMShield:
         try:
             from litellm import completion
         except ImportError as exc:  # pragma: no cover
-            raise ImportError("Install litellm: pip install 'deepintshield[litellm]'") from exc
+            raise _dependency_error(
+                "Install litellm: pip install 'deepintshield[litellm]'",
+                code=ErrorCode.PROVIDER_DEPENDENCY_MISSING,
+                component="litellm",
+            ) from exc
 
         return completion(
             model=model,

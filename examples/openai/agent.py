@@ -1,5 +1,5 @@
-"""Agentic example: guard input, tool calls, and final output."""
-from deepintshield import DeepintShield, DeepintShieldBlockedError
+"""Explicit input, tool, and output guardrail stages."""
+from deepintshield import DeepintShield
 
 
 shield = DeepintShield.from_env()
@@ -12,10 +12,7 @@ def knowledge_search(query: str) -> str:
 
 user_input = "Find the visitor policy."
 
-try:
-    shield.agent.check_input(user_input)
-    tool_result = knowledge_search(user_input)
-    shield.agent.check_output(tool_result)
-    print(tool_result)
-except DeepintShieldBlockedError as exc:
-    print(f"Blocked at {exc.stage}: {exc.reason}")
+shield.agent.check_input(user_input)
+tool_result = knowledge_search(user_input)
+shield.agent.check_output(tool_result)
+print(tool_result)

@@ -1,17 +1,15 @@
-"""LangGraph agent with full DeepintShield wrap (input, tool, output guards)."""
+"""Native LangGraph workflow with automatic Agentic enforcement."""
 import operator
 from typing import Annotated, Sequence, TypedDict
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
-from langgraph.graph import StateGraph
+from langgraph.graph import END, START, StateGraph
 
 from deepintshield import DeepintShield
 
 
 class AgentState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], operator.add]
-    shield_blocked: bool
-    shield_reason: str
 
 
 def agent_node(state: AgentState):
@@ -38,7 +36,9 @@ shield = DeepintShield.from_env()
 graph = StateGraph(AgentState)
 graph.add_node("agent", agent_node)
 graph.add_node("tools", tools_node)
-graph = shield.langgraph().wrap(graph)
+graph.add_edge(START, "agent")
+graph.add_edge("agent", "tools")
+graph.add_edge("tools", END)
 
 app = graph.compile()
 result = app.invoke({"messages": [HumanMessage(content="Find the visitor policy.")]})

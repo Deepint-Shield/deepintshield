@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Iterable
 
+from ...errors import ErrorCode, _dependency_error
 from ..tool import Tool
 
 if TYPE_CHECKING:
@@ -19,9 +20,11 @@ def to_langchain(client: "MCPClient", tools: Iterable[Tool]) -> list[Any]:
         from langchain_core.tools import BaseTool
         from pydantic import BaseModel, ConfigDict, Field, create_model
     except ImportError as exc:  # pragma: no cover
-        raise ImportError(
+        raise _dependency_error(
             "to_langchain requires `langchain-core` and `pydantic`. "
-            "Install with: pip install 'deepintshield[langchain]'."
+            "Install with: pip install 'deepintshield[langchain]'.",
+            code=ErrorCode.FRAMEWORK_DEPENDENCY_MISSING,
+            component="langchain_mcp",
         ) from exc
 
     out: list[Any] = []

@@ -18,6 +18,11 @@ from typing import List, Optional
 
 import httpx
 
+from ..errors import (
+    DeepIntShieldError,
+    GatewayUnavailable,
+    GovernanceConfigurationError,
+)
 from .base import _CachedToken
 
 log = logging.getLogger(__name__)
@@ -46,23 +51,23 @@ class ZeroIDCredential:
         return "zeroid"
 
     def get_token(self) -> str:
-        cached = self._cache.get()
-        if cached:
-            return cached
-        with self._cache.lock():
-            cached = self._cache.get()
-            if cached:
-                return cached
-            token, ttl = self._exchange()
-            self._cache.set(token, ttl)
-            return token
+        try:
+            return self._cache.get_or_refresh(self._exchange)
+        except DeepIntShieldError:
+            raise
+        except Exception as exc:
+            raise GatewayUnavailable(
+                reason=type(exc).__name__,
+                code="credential_exchange_failed",
+            ) from None
 
     def _exchange(self) -> tuple[str, float]:
         subject_token = os.environ.get(self._subject_token_env, "")
         if not subject_token:
-            raise RuntimeError(
-                f"ZeroID subject token not found in env {self._subject_token_env}. "
-                "Provide one via the workload identity / sidecar that issued it."
+            raise GovernanceConfigurationError(
+                framework="agent-credential",
+                reason="ZeroID subject token is not configured",
+                code="credential_configuration_error",
             )
         data = {
             "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",

@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING, Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable, Mapping
 
 from ..tool import Tool
+from ._security import is_mcp_authorization_boundary_error
 
 if TYPE_CHECKING:
     from ..client import MCPClient
@@ -29,11 +30,18 @@ def to_anthropic(tools: Iterable[Tool]) -> list[dict[str, Any]]:
     return out
 
 
-def run_tool_uses(client: "MCPClient", content: Iterable[Any]) -> list[dict[str, Any]]:
+def run_tool_uses(
+    client: "MCPClient",
+    content: Iterable[Any],
+    *,
+    extra_headers: Mapping[str, str] | None = None,
+) -> list[dict[str, Any]]:
     """Execute every ``tool_use`` block in an assistant content array.
 
     Returns the list of ``tool_result`` blocks that should make up the next
     user message: ``messages.append({"role":"user","content": <returned>})``.
+    Canonical authorization outcomes are raised rather than converted into
+    model-visible tool errors.
     """
     results: list[dict[str, Any]] = []
     for block in content:
@@ -41,10 +49,17 @@ def run_tool_uses(client: "MCPClient", content: Iterable[Any]) -> list[dict[str,
         if block_type != "tool_use":
             continue
         try:
-            result = client.call_qualified(name, args or {}, call_id=tool_use_id)
+            result = client.call_qualified(
+                name,
+                args or {},
+                call_id=tool_use_id,
+                extra_headers=extra_headers,
+            )
             text = result.text or "(empty result)"
             is_error = result.is_error
         except Exception as exc:  # noqa: BLE001
+            if is_mcp_authorization_boundary_error(exc):
+                raise
             text = f"[MCP execution error] {exc}"
             is_error = True
         results.append(

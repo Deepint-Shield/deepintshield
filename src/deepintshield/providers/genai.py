@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from .._gemini_cache import GenaiCachedClient, GeminiCacheManager, env_ttl_seconds
+from ..errors import ErrorCode, _dependency_error
 
 if TYPE_CHECKING:
     from ..client import DeepintShield
@@ -14,7 +15,11 @@ def build_client(shield: "DeepintShield", *, passthrough: bool = False, **kwargs
         from google import genai
         from google.genai.types import HttpOptions
     except ImportError as exc:  # pragma: no cover
-        raise ImportError("Install google-genai: pip install 'deepintshield[genai]'") from exc
+        raise _dependency_error(
+            "Install google-genai: pip install 'deepintshield[genai]'",
+            code=ErrorCode.PROVIDER_DEPENDENCY_MISSING,
+            component="genai",
+        ) from exc
 
     base_url = shield.genai_passthrough_base_url() if passthrough else shield.genai_base_url()
     return genai.Client(

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from ..errors import ErrorCode, _dependency_error
 from ..transport import connection
 
 if TYPE_CHECKING:
@@ -17,7 +18,11 @@ def model_client(shield: "DeepintShield", model: str = "gpt-4o-mini", *, identit
     try:
         from autogen_ext.models.openai import OpenAIChatCompletionClient
     except ImportError as exc:  # pragma: no cover
-        raise ImportError("Install autogen: pip install 'deepintshield[autogen]'") from exc
+        raise _dependency_error(
+            "Install autogen: pip install 'deepintshield[autogen]'",
+            code=ErrorCode.FRAMEWORK_DEPENDENCY_MISSING,
+            component="autogen",
+        ) from exc
     base_url, headers = connection(shield, identity=identity)
     return OpenAIChatCompletionClient(
         model=kwargs.pop("model", model),

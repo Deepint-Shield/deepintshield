@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any, Callable
 
-from ..errors import DeepintShieldBlockedError
+from ..errors import DeepintShieldBlockedError, ErrorCode, _dependency_error
 from ..types import NON_BLOCKING_DECISIONS, GuardrailResult, ToolInvocation
 
 if TYPE_CHECKING:
@@ -88,7 +88,11 @@ class LangGraphShield:
         try:
             from langgraph.graph import END
         except ImportError as exc:  # pragma: no cover
-            raise ImportError("Install langgraph: pip install 'deepintshield[langgraph]'") from exc
+            raise _dependency_error(
+                "Install langgraph: pip install 'deepintshield[langgraph]'",
+                code=ErrorCode.PROVIDER_DEPENDENCY_MISSING,
+                component="langgraph",
+            ) from exc
 
         blocked = self.STATE_BLOCKED
 

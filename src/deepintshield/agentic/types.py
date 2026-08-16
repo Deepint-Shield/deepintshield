@@ -8,7 +8,7 @@ any heavy schema lib.
 from __future__ import annotations
 
 from enum import Enum
-from typing import List
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -48,11 +48,11 @@ class ContextBag(BaseModel):
 
 
 class DelegationContext(BaseModel):
-    """Normalised input to the PDP.
+    """Normalised input shared by the legacy PDP and Agentic-New GAF.
 
-    Mirrors the Go-side ``agentic.DelegationContext`` 1:1. Field names use
-    snake_case to match the JSON wire format; the SDK never produces or
-    consumes anything else.
+    The legacy-only fields are omitted from the GAF request and the GAF-only
+    fields are omitted from the legacy request. Field names use snake_case to
+    match both JSON wire contracts.
     """
 
     principal: str = ""
@@ -79,6 +79,23 @@ class DelegationContext(BaseModel):
     provider_id: str = ""
     policy_version: int = 0
     context: ContextBag = Field(default_factory=ContextBag)
+    # Agentic-New / OpenFGA inputs.  They are optional so existing
+    # agentic-security callers remain wire-compatible.  The SDK derives
+    # fail-closed defaults for governed tool calls:
+    #   agent=<the selected Registry principal>, or empty for server selection
+    #   permission=holder
+    #   object=permission:v1-<tool>-<read|write>--<128-bit digest>
+    #   tool=tool:<tool>
+    agent: str = ""
+    user: str = ""
+    permission: str = ""
+    object: str = ""
+    delegation_id: str = ""
+    # Named operation inside ``tool``. Empty deliberately preserves old
+    # one-operation tools; when discovery registered exactly one action, the
+    # server resolves it without trusting client-supplied impact metadata.
+    action: str = ""
+    action_class: str = ""
 
 
 class Decision(BaseModel):
@@ -94,20 +111,53 @@ class Decision(BaseModel):
     mode: str = ""
     cache_hit: bool = False
     latency_us: int = 0
+    # Canonical-source metadata. Whenever ``gaf_checked`` is true, ``verdict``
+    # is derived solely from this same GAF response; no hidden PDP can replace
+    # it. ``gaf_checked`` is false only for the explicitly marked
+    # ``legacy-compat`` result returned by a genuinely older gateway.
+    # ``gaf_verdict`` retains the raw shadow-mode answer while ``verdict`` uses
+    # the canonical ``proceed`` bit.
+    gaf_checked: bool = False
+    gaf_verdict: str = ""
+    failed_check: str = ""
+    checks: List[Dict[str, Any]] = Field(default_factory=list)
+    proceed: Optional[bool] = None
+    would_block: bool = False
+    approval_id: str = ""
+
+
+class GAFDecision(BaseModel):
+    """Response from ``POST /api/agentic-new/decide``."""
+
+    verdict: Verdict
+    decision_id: str = ""
+    allow: bool = False
+    reason: str = ""
+    failed_check: str = ""
+    checks: List[Dict[str, Any]] = Field(default_factory=list)
+    latency_us: int = 0
+    mode: str = ""
+    would_block: bool = False
+    proceed: Optional[bool] = None
+    approval_id: str = ""
 
 
 class VKCredentialInfo(BaseModel):
-    """Public discovery info the SDK fetches once from
-    GET /api/agentic-security/vk-credential-info.
+    """Public discovery info the SDK fetches once from the canonical
+    ``GET /api/agentic-new/credential-info`` route (with the legacy
+    ``/api/agentic-security/vk-credential-info`` route as an older-gateway
+    fallback).
 
     Contains NO secrets - only the OIDC discovery values the SDK needs to
-    build the right AgentCredential implementation for whichever identity
-    provider the VK is bound to.
+    build the right AgentCredential implementation for the identity provider
+    on the server-selected Registry profile.
     """
 
+    provider_id: str = ""
     provider_type: str = ""
     tenant_id: str = ""
     blueprint_client_id: str = ""
+    agent_identity_client_id: str = ""
     authority: str = ""
     gateway_audience: str = ""
     scopes: List[str] = Field(default_factory=list)
@@ -115,6 +165,10 @@ class VKCredentialInfo(BaseModel):
     exchange_endpoint: str = ""
     allow_cross_tenant: bool = False
     agent_configured: bool = False
+    # Canonical Agentic-New principal selected from the authenticated virtual
+    # key's Registry associations. Empty on older gateways; in that case the SDK
+    # omits its claim and lets the data plane select from authenticated context.
+    agent_subject: str = ""
 
 
 __all__ = ["Verdict", "Decision", "DelegationContext", "ContextBag", "VKCredentialInfo"]

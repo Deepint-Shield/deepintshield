@@ -3,6 +3,7 @@ from __future__ import annotations
 import functools
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping
 
+from .errors import ErrorCode, _annotate_error
 from .types import RetrievedChunk
 
 if TYPE_CHECKING:
@@ -74,7 +75,13 @@ class RAGSurface:
             body["source_id"] = source_id
         if metadata:
             body["metadata"] = dict(metadata)
-        return self._client.request("POST", "/api/rag-security/evaluate", json_body=body)
+        return self._client.request(
+            "POST",
+            "/api/rag-security/evaluate",
+            json_body=body,
+            error_code=ErrorCode.RAG_EVALUATION_FAILED,
+            require_object=True,
+        )
 
     def filter(
         self,
@@ -117,9 +124,12 @@ class RAGSurface:
             (m for m in _RETRIEVE_METHODS if callable(getattr(retriever, m, None))), None
         )
         if method_name is None:
-            raise TypeError(
-                "guard_retriever: retriever exposes no known retrieve method "
-                f"({', '.join(_RETRIEVE_METHODS)})"
+            raise _annotate_error(
+                TypeError(
+                    "guard_retriever: retriever exposes no known retrieve method "
+                    f"({', '.join(_RETRIEVE_METHODS)})"
+                ),
+                ErrorCode.RAG_RETRIEVER_UNSUPPORTED,
             )
         original = getattr(retriever, method_name)
         if getattr(original, "_deepintshield_wrapped", False):
@@ -217,9 +227,12 @@ class RAGSurface:
                 object.__setattr__(embedder, name, wrapped)
             wrapped_any = True
         if not wrapped_any:
-            raise TypeError(
-                "guard_embedder: no known embed method found "
-                f"({', '.join(methods)})"
+            raise _annotate_error(
+                TypeError(
+                    "guard_embedder: no known embed method found "
+                    f"({', '.join(methods)})"
+                ),
+                ErrorCode.RAG_EMBEDDER_UNSUPPORTED,
             )
         return embedder
 

@@ -1,28 +1,35 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+<!-- Copyright 2026 DeepIntShield contributors -->
+
 # OpenClaw integration
 
-OpenClaw is a Node/TypeScript agent runtime, so it integrates in two layers.
+OpenClaw is a Node/TypeScript runtime, so its model and local-tool boundaries
+use two small integrations. Both feed the canonical Agentic workspace; there is
+no legacy Agentic API or second policy model.
 
-## Layer 1 — LLM gateway (zero code, Python-generated config)
+## 1. Route model traffic through the gateway
 
-Route every OpenClaw model call through the DeepintShield gateway — VK auth,
-semantic/exact cache, request coalescing, guardrails, budgets, cost analytics,
-catalog fallbacks — with **no code change**. Generate the provider block from a
-live client:
+Generate the provider block from a Python client:
 
 ```python
-# gen_openclaw_config.py
 import json
 from deepintshield import DeepintShield
 
 shield = DeepintShield.from_env()
 cfg = shield.agentic.openclaw_config(
-    models=[{"id": "gpt-4o-mini", "contextWindow": 128000, "maxTokens": 16384,
-             "cost": {"input": 0.15, "output": 0.6}}],
+    models=[
+        {
+            "id": "gpt-4o-mini",
+            "contextWindow": 128000,
+            "maxTokens": 16384,
+            "cost": {"input": 0.15, "output": 0.6},
+        }
+    ],
 )
 print(json.dumps(cfg, indent=2))
 ```
 
-Merge the output into `openclaw.json` and set the default model:
+Merge that output into `openclaw.json` and select the model:
 
 ```json
 {
@@ -35,51 +42,70 @@ Merge the output into `openclaw.json` and set the default model:
       }
     }
   },
-  "agents": { "defaults": { "model": { "primary": "deepintshield/gpt-4o-mini" } } }
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "deepintshield/gpt-4o-mini"
+      }
+    }
+  }
 }
 ```
 
-## Layer 2 — in-process tool governance (TypeScript plugin)
+## 2. Gate every local tool with the plugin
 
-OpenClaw plugins run in-process in the Node gateway, so the Python SDK cannot be
-embedded. Ship governance as a thin TS plugin that calls the gateway's REST
-`/decide` + approvals + code-threat-scan APIs on OpenClaw's native hooks:
+This directory is a loadable OpenClaw plugin, not just a pseudocode snippet. It
+uses OpenClaw's typed `before_tool_call` hook and the canonical
+`POST /api/agentic-new/decide` contract.
 
-```ts
-// deepintshield.plugin.ts  (openclaw.plugin.json + definePluginEntry)
-import { definePluginEntry } from "openclaw/plugin";
+```bash
+openclaw plugins install ./deepintshield/examples/openclaw
+openclaw plugins enable deepintshield-agentic
 
-const GW = process.env.DIS_GATEWAY!;        // e.g. https://app.deepintshield.com
-const VK = process.env.DIS_VK!;
+export DIS_GATEWAY="https://app.deepintshield.com"
+export DIS_VK="<virtual-key>"
+# Required when the Agent Registry binds this VK to an Entra workload identity:
+export DIS_AGENT_TOKEN="the-workload-assertion"
 
-async function decide(tool: string, args: unknown, ctx: any) {
-  const r = await fetch(`${GW}/api/agentic-security/decide`, {
-    method: "POST",
-    headers: { "Authorization": `Bearer ${VK}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ tool, args_digest: args, principal: `agent:${ctx.agentId}` }),
-  });
-  return r.json();                          // { verdict, reason, decision_id, ... }
-}
-
-export default definePluginEntry({
-  register(api) {
-    api.registerHook("before_tool_call", async (call, ctx) => {
-      const d = await decide(call.toolName, call.args, ctx);
-      if (d.verdict === "DENY") return { block: true, blockReason: d.reason };
-      if (d.verdict === "REQUIRE_APPROVAL")
-        return { requireApproval: { title: call.toolName, severity: "high", timeout: 300 } };
-      return {};                            // ALLOW
-    });
-    api.registerHook("after_tool_call", async (call, res, ctx) => {
-      // observed-behavior event for fingerprinting / drift / audit
-    });
-    api.registerHook("before_install", async (staged) => {
-      // POST staged skill/plugin source to /api/.../scan for code-threat findings
-    });
-  },
-});
+openclaw gateway restart
+openclaw doctor
 ```
 
-> The Python SDK ships Layer 1 today (`shield.agentic.openclaw_config()`). Layer 2
-> is the thin TypeScript plugin above — it reuses the same REST decide/approval/scan
-> APIs the Python adapters call, so policy, grants, and audit are identical.
+Optional acting identities use the same directory resolver as the Python SDK:
+
+```bash
+# Human acting through the agent (JIT-provisioned in Organization → Users):
+export DIS_USER_EMAIL="alice@corp.example"
+
+# Or a service account:
+export DIS_USERNAME="billing-bot"
+export DIS_PRINCIPAL_KIND="service_account"
+
+# A pre-resolved directory subject may be supplied instead:
+# export DIS_USER_SUBJECT="user:alice"
+```
+
+The agent identity is never accepted from OpenClaw context. The server derives
+it from the authenticated virtual key and, when configured, verifies
+`X-Agent-Token` against the workspace's Entra identity provider. The optional
+email/username is resolved once at gateway startup and then served from memory.
+
+For every tool call the plugin:
+
+- hashes canonicalized parameters locally and sends only a `sha256:` digest;
+- forwards run/session identifiers so the execution opens as one correlated
+  Agentic network with clickable agent/tool/action decisions;
+- uses the server-owned registry action class and authoritative `proceed`
+  result (including shadow mode);
+- blocks on denial, pending DeepIntShield approval, malformed response, timeout,
+  gateway outage or missing credentials.
+
+An unregistered tool is recorded by the gateway with conservative write/high
+risk metadata. Observation never creates OpenFGA grants, so an operator still
+must approve the tool/action and assign the appropriate workspace role or
+permission before it can execute.
+
+`DIS_AUTHZ_TIMEOUT_MS` controls the fail-closed decision timeout (default 5000,
+bounded to 100–30000 ms). Network authorization necessarily has a decision
+round trip; identity resolution is warmed at startup and the server can use its
+bounded decision cache where immediate-revocation policy permits it.

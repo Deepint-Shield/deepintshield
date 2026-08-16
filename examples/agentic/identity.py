@@ -1,8 +1,9 @@
-"""Inspect the agent-identity binding the gateway resolved for this VK.
+"""Inspect the Registry agent identity selected for this SDK instance.
 
-No Entra / ZeroID / OIDC GUIDs appear in code - the SDK discovers the binding
-from /api/agentic-security/vk-credential-info and, on Azure compute, detects
-the Managed Identity automatically. This is purely for ops visibility."""
+No Entra / ZeroID / OIDC GUIDs appear in code. The SDK sends the stable
+agent_name as a selector to /api/agentic-new/credential-info; the gateway
+validates its Registry-to-Virtual-Key association. On Azure compute the SDK
+detects the Managed Identity automatically. This is purely for ops visibility."""
 from deepintshield import DeepintShield
 
 

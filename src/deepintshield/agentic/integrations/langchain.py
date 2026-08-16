@@ -24,8 +24,14 @@ you need the SDK to redact arguments locally before the body runs.
 
 from __future__ import annotations
 
+import functools
+import inspect
 import logging
 from typing import Any, Optional
+
+from ..errors import GovernanceConfigurationError, public_agentic_boundary
+from ..obligations import apply_obligations
+from ._common import source_fingerprint
 
 log = logging.getLogger(__name__)
 
@@ -41,11 +47,11 @@ def _handler_class() -> type:
 
     try:
         from langchain_core.callbacks import BaseCallbackHandler
-    except Exception as exc:  # pragma: no cover - install-time signal
-        raise ImportError(
-            "langchain-core is required for shield.agentic.guard(). "
-            "Install with: pip install 'deepintshield[langchain]'"
-        ) from exc
+    except Exception:  # pragma: no cover - install-time signal
+        raise GovernanceConfigurationError(
+            framework="langchain",
+            code="framework_dependency_missing",
+        ) from None
 
     from ..gate import resolve
 
@@ -60,6 +66,7 @@ def _handler_class() -> type:
             super().__init__()
             self._engine = engine
 
+        @public_agentic_boundary
         def on_tool_start(
             self,
             serialized: Any,
@@ -68,6 +75,11 @@ def _handler_class() -> type:
             inputs: Any = None,
             **kwargs: Any,
         ) -> None:
+            # Current SDK clients guard BaseTool.run/arun directly. Retain this
+            # callback for older/custom LangChain runtimes without deciding
+            # twice when both integration styles are present.
+            if _automatic_guard_active():
+                return
             name = ""
             if isinstance(serialized, dict):
                 name = serialized.get("name") or ""
@@ -83,9 +95,112 @@ def _handler_class() -> type:
     return _HANDLER_CLASS
 
 
+@public_agentic_boundary
 def make_handler(engine: Any) -> Any:
     """Return a LangChain ``BaseCallbackHandler`` bound to ``engine``."""
-    return _handler_class()(engine)
+    handler_class = _handler_class()
+    try:
+        return handler_class(engine)
+    except Exception as error:
+        raise GovernanceConfigurationError(
+            framework="langchain",
+            reason=str(error),
+            code="framework_integration_unsupported",
+        ) from None
 
 
-__all__ = ["make_handler"]
+def _automatic_guard_active() -> bool:
+    try:
+        from langchain_core.tools import BaseTool
+
+        return bool(
+            getattr(BaseTool.run, "_deepintshield_guarded", False)
+            and getattr(BaseTool.arun, "_deepintshield_guarded", False)
+        )
+    except Exception:
+        return False
+
+
+def _guard_tool(tool: Any, tool_input: Any, trailing: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
+    from ..enforcement import bind_engine, ensure_topology_reported, resolve_engine
+    from ..gate import resolve
+
+    engine = resolve_engine(tool)
+    bind_engine(tool, engine)
+    name = getattr(tool, "name", None) or type(tool).__name__
+    impl = getattr(tool, "_run", None) or getattr(tool, "func", None) or tool
+    try:
+        fp = source_fingerprint(impl)
+    except Exception:
+        fp = ""
+    ensure_topology_reported(engine, tool, required=True)
+    decision = resolve(
+        engine,
+        str(name),
+        (tool_input, *trailing),
+        kwargs,
+        tool_fingerprint=fp,
+        tool_callable=impl,
+    )
+    if isinstance(tool_input, dict):
+        tool_input = apply_obligations(tool_input, decision.obligations)
+    return tool_input
+
+
+def enforce() -> bool:
+    """Guard LangChain's sync and async BaseTool execution boundaries."""
+    try:
+        from langchain_core.tools import BaseTool
+    except Exception:
+        return False
+
+    installed = True
+    for attr in ("run", "arun"):
+        original = getattr(BaseTool, attr, None)
+        if not callable(original):
+            installed = False
+            continue
+        if getattr(original, "_deepintshield_guarded", False):
+            continue
+        is_async = inspect.iscoroutinefunction(original)
+        if attr == "arun" and not is_async:
+            installed = False
+            continue
+
+        if is_async:
+
+            @functools.wraps(original)
+            @public_agentic_boundary
+            async def guarded(
+                self: Any,
+                tool_input: Any,
+                *args: Any,
+                _original=original,
+                **kwargs: Any,
+            ) -> Any:
+                tool_input = _guard_tool(self, tool_input, args, kwargs)
+                return await _original(self, tool_input, *args, **kwargs)
+
+        else:
+
+            @functools.wraps(original)
+            @public_agentic_boundary
+            def guarded(  # type: ignore[no-redef]
+                self: Any,
+                tool_input: Any,
+                *args: Any,
+                _original=original,
+                **kwargs: Any,
+            ) -> Any:
+                tool_input = _guard_tool(self, tool_input, args, kwargs)
+                return _original(self, tool_input, *args, **kwargs)
+
+        guarded._deepintshield_guarded = True  # type: ignore[attr-defined]
+        try:
+            setattr(BaseTool, attr, guarded)
+        except Exception:
+            installed = False
+    return installed and _automatic_guard_active()
+
+
+__all__ = ["make_handler", "enforce"]

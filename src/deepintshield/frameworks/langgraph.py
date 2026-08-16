@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from ..errors import ErrorCode, _dependency_error
 from ..transport import connection
 
 if TYPE_CHECKING:
@@ -18,7 +19,11 @@ def model(shield: "DeepintShield", model: str = "gpt-4o-mini", *, identity: bool
     try:
         from langchain_openai import ChatOpenAI
     except ImportError as exc:  # pragma: no cover
-        raise ImportError("Install langchain: pip install 'deepintshield[langgraph]'") from exc
+        raise _dependency_error(
+            "Install langchain: pip install 'deepintshield[langgraph]'",
+            code=ErrorCode.FRAMEWORK_DEPENDENCY_MISSING,
+            component="langgraph",
+        ) from exc
     base_url, headers = connection(shield, identity=identity)
     return ChatOpenAI(
         model=kwargs.pop("model", model),
@@ -34,7 +39,11 @@ def embedder(shield: "DeepintShield", model: str = "text-embedding-3-small", *, 
     try:
         from langchain_openai import OpenAIEmbeddings
     except ImportError as exc:  # pragma: no cover
-        raise ImportError("Install langchain: pip install 'deepintshield[langgraph]'") from exc
+        raise _dependency_error(
+            "Install langchain: pip install 'deepintshield[langgraph]'",
+            code=ErrorCode.FRAMEWORK_DEPENDENCY_MISSING,
+            component="langgraph",
+        ) from exc
     base_url, headers = connection(shield, identity=identity)
     return OpenAIEmbeddings(
         model=kwargs.pop("model", model),

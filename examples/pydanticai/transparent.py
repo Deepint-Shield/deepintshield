@@ -6,6 +6,9 @@ from deepintshield import DeepintShield
 
 
 shield = DeepintShield.from_env()
-agent = Agent(shield.pydanticai().model("gpt-4o-mini"), instructions="Be concise.")
+agent = Agent(
+    shield.bind("pydanticai").model("gpt-4o-mini"),
+    instructions="Be concise.",
+)
 
 print(agent.run_sync("hello from the PydanticAI binder").output)

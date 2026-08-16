@@ -6,7 +6,7 @@ from deepintshield import DeepintShield
 
 
 shield = DeepintShield.from_env()
-Settings.llm = shield.llamaindex().llm("gpt-4o-mini")
-Settings.embed_model = shield.llamaindex().embedder("text-embedding-3-small")
+Settings.llm = shield.bind("llamaindex").llm("gpt-4o-mini")
+Settings.embed_model = shield.bind("llamaindex").embedder("text-embedding-3-small")
 
 print(Settings.llm.complete("Say hello from LlamaIndex via DeepintShield."))

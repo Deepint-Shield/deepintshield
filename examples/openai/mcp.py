@@ -1,59 +1,82 @@
-"""End-to-end MCP example using the OpenAI SDK through DeepintShield.
+"""OpenAI Agents MCP integration through DeepIntShield's governed endpoint.
 
-Flow:
-  1. Define tools (or fetch via ``shield.mcp.list_tools(admin_token=...)``).
-  2. Send a chat completion with the tools attached.
-  3. ``shield.mcp.run_openai_tool_calls`` executes any tool_calls the model
-     emitted and returns the corresponding ``role: tool`` messages.
-  4. Send a follow-up completion so the model can produce the final answer.
+OpenAI Agents owns the Streamable HTTP session, discovery, tool conversion,
+and agent loop. Its public result and failure hooks translate MCP tool-call
+failures to stable codes before the SDK can create model-visible tool output.
 """
+import asyncio
 import os
 
-from deepintshield import DeepintShield, Tool
+from agents import Agent, Runner
+from agents.mcp import MCPServerStreamableHttp
+
+from deepintshield import DeepintShield, DeepintShieldError
 
 
 shield = DeepintShield.from_env()
-openai = shield.openai()
+model = os.getenv("DEEPINTSHIELD_MODEL", "gpt-4o-mini")
 
-# Server name MUST match the case-sensitive client name in MCP Registry.
-SERVER = os.getenv("DEEPINTSHIELD_MCP_SERVER", "DeepWiki")
-MODEL = os.getenv("DEEPINTSHIELD_MODEL", "gpt-4o-mini")
 
-tools = [
-    Tool(
-        server=SERVER,
-        name="ask_question",
-        description="Ask a free-form question about a public GitHub repository.",
-        schema={
-            "type": "object",
-            "properties": {
-                "repoName": {"type": "string", "description": "owner/name"},
-                "question": {"type": "string"},
-            },
-            "required": ["repoName", "question"],
-        },
-    ),
-]
+def enforce_deepintshield_result(context):
+    """Translate the raw MCP result before OpenAI Agents emits tool output."""
+    tool_output = context.tool_output
+    if isinstance(tool_output, list):
+        content_blocks = tool_output
+    elif isinstance(tool_output, str):
+        content_blocks = [{"type": "text", "text": tool_output}]
+    else:
+        content_blocks = [tool_output]
+    shield.mcp.raise_for_result(
+        {
+            "isError": context.is_error,
+            "_meta": context.result_meta,
+            "structuredContent": context.structured_content,
+            "content": content_blocks,
+        }
+    )
+    return None
 
-messages = [
-    {
-        "role": "user",
-        "content": "Use DeepWiki to summarize how facebook/react organizes its reconciler.",
-    }
-]
 
-first = openai.chat.completions.create(
-    model=MODEL,
-    messages=messages,
-    tools=shield.mcp.to_openai(tools),
-    tool_choice="required",
-)
-assistant = first.choices[0].message
+def enforce_deepintshield_exception(_context, error):
+    """Translate an upstream MCP exception instead of formatting model text."""
+    shield.mcp.raise_for_error(error, operation="openai_agents_tool")
 
-if not assistant.tool_calls:
-    print(assistant.content)
-else:
-    messages.append(assistant.model_dump(exclude_none=True))
-    messages.extend(shield.mcp.run_openai_tool_calls(assistant.tool_calls))
-    final = openai.chat.completions.create(model=MODEL, messages=messages)
-    print(final.choices[0].message.content)
+
+async def main() -> None:
+    model_client = shield.bind("openai_agents").apply()
+    try:
+        url, headers = shield.mcp.connection()
+        async with MCPServerStreamableHttp(
+            name="DeepIntShield",
+            params={"url": url, "headers": headers},
+            cache_tools_list=True,
+            custom_data_extractor=enforce_deepintshield_result,
+            failure_error_function=enforce_deepintshield_exception,
+        ) as server:
+            agent = Agent(
+                name="MCP Assistant",
+                instructions="Use the governed MCP tools when they help.",
+                model=model,
+                mcp_servers=[server],
+            )
+            result = await Runner.run(
+                agent,
+                "Use DeepWiki to explain Suspense in facebook/react.",
+            )
+            print(result.final_output)
+    except DeepintShieldError as exc:
+        if exc.code == "mcp_tool_approval_required":
+            print("The MCP action is waiting for approval.")
+        elif exc.code == "mcp_tool_authorization_denied":
+            print("The MCP action was denied by policy.")
+        elif exc.code == "mcp_tool_authorization_unavailable":
+            print("MCP authorization is temporarily unavailable.")
+        else:
+            print(f"DeepIntShield error [{exc.code}]: {exc.description}")
+    finally:
+        await model_client.close()
+        shield.close()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

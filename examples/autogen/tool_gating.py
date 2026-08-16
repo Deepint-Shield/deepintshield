@@ -1,11 +1,15 @@
-"""Gate an AutoGen FunctionTool through the PDP - decide() runs before the
-underlying callable executes."""
+"""Native AutoGen tool execution with automatic Agentic enforcement."""
+
+import asyncio
+
+from autogen_agentchat.agents import AssistantAgent
 from autogen_core.tools import FunctionTool
 
 from deepintshield import DeepintShield
 
 
 shield = DeepintShield.from_env()
+model_client = shield.bind("autogen").model_client("gpt-4o-mini")
 
 
 async def wire_transfer(amount: float) -> str:
@@ -13,6 +17,13 @@ async def wire_transfer(amount: float) -> str:
 
 
 tool = FunctionTool(wire_transfer, description="Wire money to an account.")
-shield.agentic.autogen(tool)  # gate the tool's callable in place
-print("gated tool:", tool.name)
-# Register `tool` with your AssistantAgent(tools=[tool], …) as usual.
+agent = AssistantAgent("treasury", model_client=model_client, tools=[tool])
+
+
+async def main() -> None:
+    result = await agent.run(task="Use wire_transfer to send 10.00.")
+    print(result.messages[-1].content)
+    await model_client.close()
+
+
+asyncio.run(main())

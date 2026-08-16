@@ -7,7 +7,7 @@ from deepintshield import DeepintShield
 
 
 shield = DeepintShield.from_env()
-base_url, headers = shield.connection()  # ("…/openai", {x-bf-vk, x-bf-app, …})
+base_url, headers = shield.connection()  # gateway URL and authenticated headers
 
 client = OpenAI(base_url=base_url, api_key=shield.api_key(), default_headers=headers)
 resp = client.chat.completions.create(

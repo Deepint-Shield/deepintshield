@@ -1,9 +1,9 @@
-"""AWS Strands agent governed by the PDP with one hook provider.
+"""AWS Strands agent governed automatically at final tool dispatch.
 
-Strands' typed hook system exposes ``BeforeToolInvocationEvent``; the
-DeepintShield ``HookProvider`` gates every tool invocation there and cancels the
-call on a DENY. Point ``OpenAIModel(base_url=...)`` at the gateway for the LLM
-leg (cache/guardrails/cost).
+Constructing ``DeepintShield`` arms Strands' final ``ToolExecutor`` boundary;
+ordinary agent calls are gated without a hook argument or per-tool wrapper.
+Point ``OpenAIModel(base_url=...)`` at the gateway for the LLM leg
+(cache/guardrails/cost).
 
     pip install 'deepintshield[strands]'   # strands-agents
 """
@@ -23,6 +23,5 @@ def crm_read(customer_id: str) -> dict:
 agent = Agent(
     model="anthropic.claude-3-5-sonnet-20241022-v2:0",
     tools=[crm_read],
-    hooks=[shield.agentic.strands()],  # ← one line gates every tool invocation
 )
 print(agent("Look up customer 42"))

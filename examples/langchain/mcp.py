@@ -1,49 +1,54 @@
-"""LangChain agent example using DeepintShield-managed MCP tools.
+"""Load governed MCP tools with the maintained LangChain adapter."""
+import asyncio
 
-The same pattern works for LangGraph: pass the tool list to a ``ToolNode``.
-"""
-import os
+from langchain_mcp_adapters.client import MultiServerMCPClient
 
-from langchain.agents import AgentExecutor, create_tool_calling_agent
-from langchain_core.prompts import ChatPromptTemplate
-
-from deepintshield import DeepintShield, Tool
+from deepintshield import DeepintShield, DeepintShieldError
 
 
 shield = DeepintShield.from_env()
-llm = shield.langchain(model=os.getenv("DEEPINTSHIELD_MODEL", "gpt-4o-mini"))
 
-SERVER = os.getenv("DEEPINTSHIELD_MCP_SERVER", "DeepWiki")
 
-tool_specs = [
-    Tool(
-        server=SERVER,
-        name="ask_question",
-        description="Ask a free-form question about a public GitHub repository.",
-        schema={
-            "type": "object",
-            "properties": {
-                "repoName": {"type": "string", "description": "owner/name"},
-                "question": {"type": "string"},
+async def enforce_deepintshield_result(request, handler):
+    """Stop a canonical failed result before LangChain creates model content."""
+    try:
+        result = await handler(request)
+    except Exception as exc:
+        shield.mcp.raise_for_error(exc, operation="langchain_tool")
+    return shield.mcp.raise_for_result(result)
+
+
+async def main() -> None:
+    try:
+        url, headers = shield.mcp.connection()
+        client = MultiServerMCPClient(
+            {
+                "deepintshield": {
+                    "transport": "streamable_http",
+                    "url": url,
+                    "headers": headers,
+                }
             },
-            "required": ["repoName", "question"],
-        },
-    ),
-]
+            tool_interceptors=[enforce_deepintshield_result],
+            handle_tool_errors=False,
+        )
+        try:
+            tools = await client.get_tools()
+        except Exception as exc:
+            shield.mcp.raise_for_error(exc, operation="langchain_discovery")
+        # These are native LangChain tools. Pass them unchanged to a LangChain
+        # agent or a LangGraph ToolNode in the application that owns the model.
+        print([tool.name for tool in tools])
+    except DeepintShieldError as exc:
+        if exc.code == "mcp_tool_approval_required":
+            print("The MCP action is waiting for approval.")
+        elif exc.code == "mcp_tool_authorization_denied":
+            print("The MCP action was denied by policy.")
+        elif exc.code == "mcp_tool_authorization_unavailable":
+            print("MCP authorization is temporarily unavailable.")
+        else:
+            print(f"DeepIntShield error [{exc.code}]: {exc.description}")
 
-tools = shield.mcp.to_langchain(tool_specs)
 
-prompt = ChatPromptTemplate.from_messages(
-    [
-        ("system", "You answer questions about GitHub repositories using DeepWiki tools."),
-        ("user", "{input}"),
-        ("placeholder", "{agent_scratchpad}"),
-    ]
-)
-agent = create_tool_calling_agent(llm, tools, prompt)
-executor = AgentExecutor(agent=agent, tools=tools, verbose=False)
-
-result = executor.invoke(
-    {"input": "Summarize how facebook/react organizes its reconciler."}
-)
-print(result.get("output", ""))
+if __name__ == "__main__":
+    asyncio.run(main())

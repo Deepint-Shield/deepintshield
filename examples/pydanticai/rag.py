@@ -1,10 +1,15 @@
 import os
 
+from pydantic_ai import Agent
+
 from deepintshield import DeepintShield, build_chunk
 
 
 shield = DeepintShield.from_env()
-agent = shield.pydanticai(model="gpt-4o-mini", instructions="Answer only from the provided context.")
+agent = Agent(
+    shield.bind("pydanticai").model("gpt-4o-mini"),
+    instructions="Answer only from the provided context.",
+)
 
 query = "Summarize the access policy."
 chunks = [

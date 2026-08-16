@@ -194,7 +194,7 @@ def test_genai_cached_provider_returns_wrapped_client():
         pytest.skip("google-genai is not installed")
     from deepintshield import DeepintShield
 
-    shield = DeepintShield(virtual_key="sk-bf-1")
+    shield = DeepintShield(virtual_key="sk-ds-1")
     cached = shield.genai_cached()
     assert isinstance(cached, GenaiCachedClient)
     # Should expose the underlying client's attributes via __getattr__.
@@ -210,6 +210,6 @@ def test_genai_plain_provider_still_returns_native_client():
     from google.genai import Client as GenaiClient
     from deepintshield import DeepintShield
 
-    shield = DeepintShield(virtual_key="sk-bf-1")
+    shield = DeepintShield(virtual_key="sk-ds-1")
     native = shield.genai()
     assert isinstance(native, GenaiClient)

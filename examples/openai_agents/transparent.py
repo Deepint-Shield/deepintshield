@@ -8,7 +8,7 @@ from deepintshield import DeepintShield
 
 
 shield = DeepintShield.from_env()
-shield.openai_agents().apply()  # all model calls now route through the gateway
+shield.bind("openai_agents").apply()
 
 agent = Agent(name="Assistant", instructions="Be concise.")
 result = asyncio.run(Runner.run(agent, "Say hi from the OpenAI Agents SDK via DeepintShield."))

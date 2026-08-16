@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from ..errors import ErrorCode, _dependency_error
 from ..transport import connection
 
 if TYPE_CHECKING:
@@ -17,7 +18,11 @@ def llm(shield: "DeepintShield", model: str = "gpt-4o-mini", *, identity: bool =
     try:
         from crewai import LLM
     except ImportError as exc:  # pragma: no cover
-        raise ImportError("Install crewai: pip install 'deepintshield[crewai]'") from exc
+        raise _dependency_error(
+            "Install crewai: pip install 'deepintshield[crewai]'",
+            code=ErrorCode.FRAMEWORK_DEPENDENCY_MISSING,
+            component="crewai",
+        ) from exc
     base_url, headers = connection(shield, identity=identity)
     # LiteLLM needs a provider-prefixed model name for OpenAI-compatible bases.
     model = kwargs.pop("model", model)

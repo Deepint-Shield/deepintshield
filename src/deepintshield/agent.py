@@ -4,7 +4,7 @@ import functools
 import json
 from typing import TYPE_CHECKING, Any, Callable, Mapping
 
-from .errors import DeepintShieldBlockedError
+from .errors import DeepintShieldBlockedError, ErrorCode, _annotate_error
 from .types import GuardrailResult, ToolInvocation
 
 if TYPE_CHECKING:
@@ -54,7 +54,10 @@ class AgentSurface:
     ) -> GuardrailResult:
         if invocation is None:
             if name is None:
-                raise ValueError("evaluate_tool requires either invocation or name=...")
+                raise _annotate_error(
+                    ValueError("evaluate_tool requires either invocation or name=..."),
+                    ErrorCode.AGENT_INVOCATION_INVALID,
+                )
             invocation = ToolInvocation(
                 tool_name=name,
                 tool_input=args if args is not None else {},
@@ -63,12 +66,31 @@ class AgentSurface:
                 domains=list(domains or []),
                 metadata=dict(metadata or {}),
             )
-        tool = invocation if isinstance(invocation, ToolInvocation) else ToolInvocation(**dict(invocation))
-        tool_input = (
-            tool.tool_input
-            if isinstance(tool.tool_input, str)
-            else json.dumps(tool.tool_input, default=str, sort_keys=True)
-        )
+        invocation_failed = False
+        try:
+            tool = (
+                invocation
+                if isinstance(invocation, ToolInvocation)
+                else ToolInvocation(**dict(invocation))
+            )
+            tool_input = (
+                tool.tool_input
+                if isinstance(tool.tool_input, str)
+                else json.dumps(tool.tool_input, default=str, sort_keys=True)
+            )
+        except Exception:
+            # Invalid mappings, circular structures, and failing custom string
+            # conversions are all invocation-validation failures. Translate
+            # only after leaving the handler so private object state is not
+            # retained as chained exception context.
+            tool = None
+            tool_input = ""
+            invocation_failed = True
+        if invocation_failed or tool is None:
+            raise _annotate_error(
+                ValueError("evaluate_tool received an invalid tool invocation"),
+                ErrorCode.AGENT_INVOCATION_INVALID,
+            ) from None
         return self._client.guard(
             stage="mcp" if tool.server_label else "action",
             actor_type=actor_type,

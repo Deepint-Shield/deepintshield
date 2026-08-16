@@ -13,6 +13,11 @@ from typing import List, Optional
 
 import httpx
 
+from ..errors import (
+    DeepIntShieldError,
+    GatewayUnavailable,
+    GovernanceConfigurationError,
+)
 from .base import _CachedToken
 
 
@@ -41,22 +46,23 @@ class OIDCCredential:
         return "generic_oidc"
 
     def get_token(self) -> str:
-        cached = self._cache.get()
-        if cached:
-            return cached
-        with self._cache.lock():
-            cached = self._cache.get()
-            if cached:
-                return cached
-            token, ttl = self._exchange()
-            self._cache.set(token, ttl)
-            return token
+        try:
+            return self._cache.get_or_refresh(self._exchange)
+        except DeepIntShieldError:
+            raise
+        except Exception as exc:
+            raise GatewayUnavailable(
+                reason=type(exc).__name__,
+                code="credential_exchange_failed",
+            ) from None
 
     def _exchange(self) -> tuple[str, float]:
         secret = os.environ.get(self._client_secret_env, "")
         if not secret:
-            raise RuntimeError(
-                f"OIDC client secret not found in env {self._client_secret_env}"
+            raise GovernanceConfigurationError(
+                framework="agent-credential",
+                reason="OIDC client secret is not configured",
+                code="credential_configuration_error",
             )
         data = {
             "grant_type": "client_credentials",

@@ -7,7 +7,7 @@ from deepintshield import DeepintShield
 
 
 shield = DeepintShield.from_env()
-model_client = shield.autogen().model_client("gpt-4o-mini")  # OpenAIChatCompletionClient
+model_client = shield.bind("autogen").model_client("gpt-4o-mini")
 
 agent = AssistantAgent("assistant", model_client=model_client)
 

@@ -7,8 +7,6 @@ import json
 import httpx
 import pytest
 
-from deepintshield import GuardrailDenied
-
 pytest.importorskip("langchain_core")
 
 from langchain_core.tools import tool  # noqa: E402
@@ -18,6 +16,31 @@ def _handler(request: httpx.Request) -> httpx.Response:
     path = request.url.path
     if path.endswith("/vk-credential-info"):
         return httpx.Response(200, json={"provider_type": "", "agent_configured": False})
+    if path.endswith("/agentic-new/decide"):
+        body = json.loads(request.content)
+        if body["tool"] == "tool:write_ledger":
+            return httpx.Response(
+                200,
+                headers={"x-request-id": "d1"},
+                json={
+                    "verdict": "DENY",
+                    "allow": False,
+                    "reason": "nope",
+                    "failed_check": "permission",
+                    "mode": "enforce",
+                    "proceed": False,
+                },
+            )
+        return httpx.Response(
+            200,
+            headers={"x-request-id": "d2"},
+            json={
+                "verdict": "ALLOW",
+                "allow": True,
+                "mode": "enforce",
+                "proceed": True,
+            },
+        )
     if path.endswith("/agentic-security/decide"):
         body = json.loads(request.content)
         if body["tool"] == "write_ledger":
@@ -50,13 +73,28 @@ def test_guard_returns_callback_handler(shield_factory):
 def test_guard_denies_tool(shield_factory):
     shield = shield_factory(_handler)
     guard = shield.agentic.guard()
-    with pytest.raises(GuardrailDenied) as exc:
+    with pytest.raises(PermissionError) as exc:
         write_ledger.invoke({"row": "x"}, config={"callbacks": [guard]})
-    assert exc.value.decision_id == "d1"
-    assert exc.value.policy_id == "p1"
+    assert exc.value._deepintshield_error_code == "guardrail_denied"
+    assert str(exc.value) == (
+        "guardrail_denied: Agentic authorization denied this operation."
+    )
 
 
 def test_guard_allows_tool(shield_factory):
     shield = shield_factory(_handler)
     guard = shield.agentic.guard()
     assert read_ledger.invoke({"row": "y"}, config={"callbacks": [guard]}) == "read y"
+
+
+def test_plain_tool_execution_is_automatically_denied(shield_factory):
+    """No callback/decorator is required once a DeepintShield client exists."""
+    shield_factory(_handler)
+    with pytest.raises(PermissionError) as exc:
+        write_ledger.invoke({"row": "x"})
+    assert exc.value._deepintshield_error_code == "guardrail_denied"
+
+
+def test_plain_tool_execution_is_automatically_allowed(shield_factory):
+    shield_factory(_handler)
+    assert read_ledger.invoke({"row": "y"}) == "read y"

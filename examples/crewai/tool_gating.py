@@ -1,10 +1,12 @@
-"""Gate CrewAI tools through the PDP - decide() runs before each tool body."""
+"""Native CrewAI tool execution with automatic Agentic enforcement."""
+from crewai import Agent, Crew, Task
 from crewai.tools import tool
 
 from deepintshield import DeepintShield
 
 
 shield = DeepintShield.from_env()
+llm = shield.bind("crewai").llm("gpt-4o-mini")
 
 
 @tool("write_ledger")
@@ -13,7 +15,18 @@ def write_ledger(row: str) -> str:
     return f"wrote {row}"
 
 
-# Wrap the tool list; each invocation now passes through decide() first.
-gated = shield.agentic.crewai([write_ledger])
-print("gated tools:", [t.name for t in gated])
-# Hand `gated` to your Agent(tools=gated, …) as usual.
+accountant = Agent(
+    role="Accountant",
+    goal="Record the requested ledger row",
+    backstory="You maintain the finance ledger.",
+    llm=llm,
+    tools=[write_ledger],
+    allow_delegation=False,
+)
+task = Task(
+    description="Use write_ledger to record amount=12.50,currency=USD.",
+    expected_output="Confirmation that the row was recorded.",
+    agent=accountant,
+)
+
+print(Crew(agents=[accountant], tasks=[task]).kickoff())

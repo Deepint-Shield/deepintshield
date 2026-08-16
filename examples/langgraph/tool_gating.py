@@ -1,5 +1,4 @@
-"""Gate every tool node in a compiled LangGraph through the PDP. One line,
-no graph-shape change - existing invoke() code is unchanged."""
+"""Native LangGraph tool execution with automatic Agentic enforcement."""
 from langchain_core.tools import tool
 from langgraph.prebuilt import create_react_agent
 
@@ -7,7 +6,7 @@ from deepintshield import DeepintShield
 
 
 shield = DeepintShield.from_env()
-llm = shield.langgraph().model("gpt-4o-mini")
+llm = shield.bind("langgraph").model("gpt-4o-mini")
 
 
 @tool
@@ -17,6 +16,5 @@ def delete_file(path: str) -> str:
 
 
 graph = create_react_agent(llm, [delete_file])
-graph = shield.agentic.langgraph(graph)  # every tool node now PEP-gated
 
 print(graph.invoke({"messages": [("user", "delete /tmp/report.csv")]}))

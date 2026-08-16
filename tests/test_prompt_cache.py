@@ -218,7 +218,7 @@ def test_openai_provider_attaches_hook_by_default():
         pytest.skip("openai is not installed")
     from deepintshield import DeepintShield
 
-    shield = DeepintShield(virtual_key="sk-bf-1")
+    shield = DeepintShield(virtual_key="sk-ds-1")
     client = shield.openai()
     # Internal: openai stores its httpx client at ._client._client (sync transport)
     http_client = getattr(client, "_client", None)
@@ -235,7 +235,7 @@ def test_anthropic_provider_attaches_hook_by_default():
         pytest.skip("anthropic is not installed")
     from deepintshield import DeepintShield
 
-    shield = DeepintShield(virtual_key="sk-bf-1")
+    shield = DeepintShield(virtual_key="sk-ds-1")
     client = shield.anthropic()
     http_client = getattr(client, "_client", None)
     assert http_client is not None

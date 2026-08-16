@@ -1,4 +1,4 @@
-"""Gate LlamaIndex FunctionTools through the PDP."""
+"""Native LlamaIndex FunctionTool call with automatic Agentic enforcement."""
 from llama_index.core.tools import FunctionTool
 
 from deepintshield import DeepintShield
@@ -13,5 +13,4 @@ def transfer_funds(amount: float) -> str:
 
 
 tool = FunctionTool.from_defaults(fn=transfer_funds)
-gated = shield.agentic.llamaindex([tool])  # decide() runs before .call()
-print(gated[0].call(amount=10.0))
+print(tool.call(amount=10.0))

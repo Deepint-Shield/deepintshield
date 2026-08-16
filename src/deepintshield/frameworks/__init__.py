@@ -17,6 +17,8 @@ import functools
 import importlib
 from typing import TYPE_CHECKING, Any
 
+from ..errors import ErrorCode, _annotate_error
+
 if TYPE_CHECKING:
     from ..client import DeepintShield
 
@@ -46,9 +48,13 @@ class FrameworkBinder:
     def __getattr__(self, attr: str):
         fn = getattr(self._module, attr, None)
         if not callable(fn):
-            raise AttributeError(
-                f"framework {self._name!r} has no binder {attr!r} "
-                f"(available: {', '.join(self._public_binders())})"
+            raise _annotate_error(
+                AttributeError(
+                    f"framework {self._name!r} has no binder {attr!r} "
+                    f"(available: {', '.join(self._public_binders())})"
+                ),
+                ErrorCode.FRAMEWORK_BINDER_ATTRIBUTE_MISSING,
+                details={"framework": self._name, "binder": attr},
             )
         return functools.partial(fn, self._shield)
 
@@ -65,8 +71,12 @@ class FrameworkBinder:
 def get_binder(shield: "DeepintShield", framework: str) -> FrameworkBinder:
     name = _ALIASES.get(framework.lower(), framework.lower().replace("-", "_"))
     if name not in _KNOWN:
-        raise ValueError(
-            f"unknown framework {framework!r}; known: {', '.join(sorted(_KNOWN))}"
+        raise _annotate_error(
+            ValueError(
+                f"unknown framework {framework!r}; known: {', '.join(sorted(_KNOWN))}"
+            ),
+            ErrorCode.FRAMEWORK_BINDER_NOT_FOUND,
+            details={"framework": framework},
         )
     module = importlib.import_module(f".{name}", __package__)
     return FrameworkBinder(shield, name, module)

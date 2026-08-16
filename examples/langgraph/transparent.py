@@ -6,6 +6,6 @@ from deepintshield import DeepintShield
 
 
 shield = DeepintShield.from_env()
-llm = shield.langgraph().model("gpt-4o-mini")  # native langchain_openai.ChatOpenAI
+llm = shield.bind("langgraph").model("gpt-4o-mini")
 
 print(llm.invoke([HumanMessage(content="hello from the LangGraph binder")]).content)

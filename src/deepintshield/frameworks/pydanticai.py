@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from ..errors import ErrorCode, _dependency_error
 from ..transport import connection_headers
 
 if TYPE_CHECKING:
@@ -22,7 +23,11 @@ def model(shield: "DeepintShield", model: str = "gpt-4o-mini", *, identity: bool
         from pydantic_ai.models.openai import OpenAIChatModel
         from pydantic_ai.providers.openai import OpenAIProvider
     except ImportError as exc:  # pragma: no cover
-        raise ImportError("Install pydantic-ai: pip install 'deepintshield[pydanticai]'") from exc
+        raise _dependency_error(
+            "Install pydantic-ai: pip install 'deepintshield[pydanticai]'",
+            code=ErrorCode.FRAMEWORK_DEPENDENCY_MISSING,
+            component="pydanticai",
+        ) from exc
     base_url = kwargs.pop("base_url", shield.openai_base_url())
     headers = connection_headers(shield, identity=identity)
     http_client = kwargs.pop(
@@ -41,5 +46,9 @@ def agent(shield: "DeepintShield", model_name: str = "gpt-4o-mini", *, instructi
     try:
         from pydantic_ai import Agent
     except ImportError as exc:  # pragma: no cover
-        raise ImportError("Install pydantic-ai: pip install 'deepintshield[pydanticai]'") from exc
+        raise _dependency_error(
+            "Install pydantic-ai: pip install 'deepintshield[pydanticai]'",
+            code=ErrorCode.FRAMEWORK_DEPENDENCY_MISSING,
+            component="pydanticai",
+        ) from exc
     return Agent(model(shield, model_name, identity=identity), instructions=instructions, **kwargs)

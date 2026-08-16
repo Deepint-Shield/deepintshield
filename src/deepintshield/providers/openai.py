@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from .._prompt_cache import PROVIDER_OPENAI, build_http_client
+from ..errors import ErrorCode, _dependency_error
 
 if TYPE_CHECKING:
     from ..client import DeepintShield
@@ -24,7 +25,11 @@ def build_client(shield: "DeepintShield", *, passthrough: bool = False, **kwargs
     try:
         from openai import OpenAI
     except ImportError as exc:  # pragma: no cover
-        raise ImportError("Install openai: pip install 'deepintshield[openai]'") from exc
+        raise _dependency_error(
+            "Install openai: pip install 'deepintshield[openai]'",
+            code=ErrorCode.PROVIDER_DEPENDENCY_MISSING,
+            component="openai",
+        ) from exc
 
     base_url = shield.openai_passthrough_base_url() if passthrough else shield.openai_base_url()
     http_client = kwargs.pop("http_client", None)

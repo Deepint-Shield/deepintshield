@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from ..errors import ErrorCode, _dependency_error
 from ..transport import connection
 
 if TYPE_CHECKING:
@@ -16,7 +17,11 @@ def llm(shield: "DeepintShield", model: str = "gpt-4o-mini", *, identity: bool =
     try:
         from llama_index.llms.openai import OpenAI
     except ImportError as exc:  # pragma: no cover
-        raise ImportError("Install llama-index: pip install 'deepintshield[llamaindex]'") from exc
+        raise _dependency_error(
+            "Install llama-index: pip install 'deepintshield[llamaindex]'",
+            code=ErrorCode.FRAMEWORK_DEPENDENCY_MISSING,
+            component="llamaindex",
+        ) from exc
     base_url, headers = connection(shield, identity=identity)
     return OpenAI(
         model=kwargs.pop("model", model),
@@ -33,7 +38,11 @@ def embedder(shield: "DeepintShield", model: str = "text-embedding-3-small", *, 
     try:
         from llama_index.embeddings.openai import OpenAIEmbedding
     except ImportError as exc:  # pragma: no cover
-        raise ImportError("Install llama-index: pip install 'deepintshield[llamaindex]'") from exc
+        raise _dependency_error(
+            "Install llama-index: pip install 'deepintshield[llamaindex]'",
+            code=ErrorCode.FRAMEWORK_DEPENDENCY_MISSING,
+            component="llamaindex",
+        ) from exc
     base_url, headers = connection(shield, identity=identity)
     return OpenAIEmbedding(
         model=kwargs.pop("model", model),

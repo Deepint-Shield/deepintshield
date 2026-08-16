@@ -1,14 +1,14 @@
-"""Temporal durable agent, governed by the PDP with one interceptor.
+"""Temporal durable agent governed automatically at its activity boundary.
 
-Every activity is gated: the DeepintShield ``ActivityInboundInterceptor`` runs
-OUTSIDE the deterministic workflow sandbox (network I/O allowed), calls the PDP
-``/decide`` for the activity, and raises a NON-retryable ``ApplicationError`` on
-a DENY so Temporal doesn't spin forever on a policy denial.
+Constructing ``DeepintShield`` patches ``Worker`` to inject its activity
+interceptor. Every activity is gated outside the deterministic workflow sandbox
+(network I/O is allowed there); a DENY becomes a non-retryable
+``ApplicationError`` so Temporal does not spin forever on a policy denial.
 
-The only DeepintShield line is ``interceptors=[shield.agentic.temporal()]``.
-Everything else - durability, retries, replay, event-history audit - stays
-native Temporal. Point the model activity's OpenAI client at ``ds.openai()`` to
-add cache/guardrails/cost on the LLM leg.
+The only Agentic enforcement line is ``DeepintShield.from_env()``. Everything
+else - durability, retries, replay and event-history audit - stays native
+Temporal. Point the model activity's OpenAI client at ``shield.openai()`` to add
+cache/guardrails/cost on the LLM leg.
 
     pip install 'deepintshield[temporal]'   # temporalio
 """
@@ -45,7 +45,6 @@ async def main() -> None:
         task_queue="agent-tq",
         workflows=[AgentWorkflow],
         activities=[crm_write],
-        interceptors=[shield.agentic.temporal()],  # ← the one governance line
     )
     await worker.run()
 

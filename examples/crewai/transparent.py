@@ -6,7 +6,7 @@ from deepintshield import DeepintShield
 
 
 shield = DeepintShield.from_env()
-llm = shield.crewai().llm("gpt-4o-mini")  # native crewai.LLM at the gateway
+llm = shield.bind("crewai").llm("gpt-4o-mini")
 
 researcher = Agent(role="Researcher", goal="Answer concisely", backstory="Expert.", llm=llm)
 task = Task(

@@ -8,18 +8,20 @@ exposes an explicit ``cachedContents`` resource with its own lifecycle:
 2. Google returns a resource name like ``cachedContents/abc123def`` and an
    expiration time.
 3. Subsequent ``generate_content`` calls pass ``cached_content=<name>`` in
-   their config; Google reuses the KV state for the prefix and bills cached
-   tokens at ~25% of the normal input rate.
+   their config; Google reuses the KV state for the prefix and applies the
+   model's current cached-input pricing.
 
 This module wraps that lifecycle so customers don't have to manage cache
-resources by hand. Design choices for zero-latency / scalable / parallel use:
+resources by hand. Design choices for bounded request-path overhead and
+parallel use:
 
 * **Per-process registry** - a thread-safe dict of ``prefix_hash → (name,
   expires_at_ms)``. Lookups are O(1), no I/O.
 * **Fire-and-forget creation** - the first request that sees a prefix doesn't
   wait for the cache resource to exist. It runs through the provider as a
   normal call, while a background thread creates the cache for the *next*
-  call. This keeps the first call's latency identical to no-cache.
+  call. Resource creation is kept off the first call's provider critical path;
+  the local hash/lookup/scheduling work is still measurable.
 * **Lazy TTL eviction** - expired entries are dropped at lookup time. No
   background sweeper, no extra timers.
 * **Workspace switch respected** - the gateway strips ``cached_content`` from
@@ -29,10 +31,10 @@ resources by hand. Design choices for zero-latency / scalable / parallel use:
 * **Caller-aware** - if the caller already passed ``cached_content`` on a
   call's config, we leave it alone.
 
-Phase 4 ships an explicit ``shield.gemini_cache_manager()`` plus a wrapped
-``shield.genai_cached()`` client that calls into it automatically - opt-in
-because Gemini's storage cost (~$1/M tok/hr on 1.5 Pro) makes blanket
-auto-caching a footgun for prefixes that don't repeat often.
+The SDK exposes ``shield.gemini_cache_manager()`` plus an opt-in wrapped
+``shield.genai_cached()`` client. Cache storage prices and minimum eligible
+prefix sizes vary by model and can change, so applications should validate
+reuse frequency against the provider's current requirements and pricing.
 """
 
 from __future__ import annotations
@@ -45,8 +47,9 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-# Gemini's documented minimum for context caching to be profitable is 32K
-# tokens; below that the storage cost outweighs the input-token discount.
+# Conservative default heuristic for deciding whether to create a cache.
+# Provider eligibility and break-even points vary by model and pricing; callers
+# can override this value for their measured workload.
 DEFAULT_MIN_PREFIX_TOKENS = 32_768
 
 # Default TTL on the Gemini side. Customers override this via the workspace

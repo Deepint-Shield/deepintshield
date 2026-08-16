@@ -1,10 +1,10 @@
 """Transport layer (L1) - the single source of truth for pointing any
 framework's *native* client at the DeepintShield gateway.
 
-The whole "minimal touch" promise rests here: a user keeps 100% of their
-framework code and only swaps where the model client points (``base_url``)
-and what key it carries (the virtual key). Everything else - attribution and,
-optionally, agent identity - is injected as headers in one place.
+The compatibility layer keeps gateway endpoint, virtual-key, attribution, and
+optional agent-identity header construction in one place. Supported framework
+integrations can generally reuse their application logic while swapping model
+client construction; provider-specific extensions still require validation.
 
 ``connection()`` returns ``(base_url, headers)`` for manual wiring;
 ``http_client()`` returns a ready ``httpx.Client`` carrying the same. Both are
@@ -35,11 +35,11 @@ def connection_headers(
     ``identity=True`` triggers lazy agentic discovery (one network call) the
     first time; it defaults off so chat traffic never blocks on it.
     """
-    h = dict(shield.headers())  # content-type + x-bf-vk + default_headers
-    h.setdefault("x-bf-app", shield.app_name)
-    h.setdefault("x-bf-agent", shield.agent_name)
-    h.setdefault("x-bf-requester", shield.requester)
-    h.setdefault("x-bf-requester-role", shield.requester_role)
+    h = dict(shield.headers())  # content-type + x-deepintshield-vk + default_headers
+    h.setdefault("x-deepintshield-app", shield.app_name)
+    h.setdefault("x-deepintshield-agent", shield.agent_name)
+    h.setdefault("x-deepintshield-requester", shield.requester)
+    h.setdefault("x-deepintshield-requester-role", shield.requester_role)
     if identity:
         token = shield._agent_token()
         if token:

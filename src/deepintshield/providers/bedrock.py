@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from typing import TYPE_CHECKING, Any
 
+from ..errors import ErrorCode, _dependency_error
+
 if TYPE_CHECKING:
     from ..client import DeepintShield
 
@@ -12,7 +14,11 @@ def build_client(shield: "DeepintShield", *, region_name: str | None = None, **k
     try:
         import boto3
     except ImportError as exc:  # pragma: no cover
-        raise ImportError("Install boto3: pip install 'deepintshield[bedrock]'") from exc
+        raise _dependency_error(
+            "Install boto3: pip install 'deepintshield[bedrock]'",
+            code=ErrorCode.PROVIDER_DEPENDENCY_MISSING,
+            component="bedrock",
+        ) from exc
 
     key = shield.api_key()
     client = boto3.client(

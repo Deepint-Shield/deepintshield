@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Optional, Protocol
+from typing import Callable, Optional, Protocol
 
 
 class AgentCredential(Protocol):
@@ -70,8 +70,37 @@ class _CachedToken:
 
     def set(self, token: str, expires_in_seconds: float) -> None:
         with self._lock:
-            self._token = token
-            self._expires_at = time.time() + expires_in_seconds
+            self._set_unlocked(token, expires_in_seconds)
+
+    def get_or_refresh(self, refresh: Callable[[], tuple[str, float]]) -> str:
+        """Return a warm token or refresh it exactly once.
+
+        The refresh callback deliberately runs while the lock is held: one
+        caller performs the network exchange and concurrent callers wait for
+        that result.  Updating the cache uses the unlocked helper so the
+        non-reentrant ``threading.Lock`` is never acquired twice by the same
+        thread.
+        """
+        cached = self.get()
+        if cached:
+            return cached
+        with self._lock:
+            cached = self.get()
+            if cached:
+                return cached
+            token, ttl = refresh()
+            self._set_unlocked(token, ttl)
+            return token
+
+    def _set_unlocked(self, token: str, expires_in_seconds: float) -> None:
+        self._token = token
+        self._expires_at = time.time() + expires_in_seconds
 
     def lock(self) -> threading.Lock:
+        """Compatibility escape hatch for older credential implementations.
+
+        New implementations should call :meth:`get_or_refresh`; exposing the
+        lock remains harmless for third-party credentials that imported this
+        private helper before the single-flight API existed.
+        """
         return self._lock

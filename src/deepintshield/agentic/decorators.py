@@ -1,5 +1,5 @@
 """``shield_tool`` - the one-line wrapper that turns any Python function into
-a PEP-gated tool, plus a process-global default client for the common
+a PEP-gated tool, with unambiguous client resolution for the common
 "one client, many decorators" case.
 
 The decorator is import-safe even when no client is bound - it raises a clear
@@ -10,29 +10,33 @@ modules that don't always have a client available.
 from __future__ import annotations
 
 import functools
+import inspect
 from typing import Any, Callable, Optional
 
-from .gate import enforce
+from .errors import public_agentic_boundary, public_agentic_error_boundary
+from .execution import execution_scope
+from .gate import enforce, preflight
 
-# May be a DeepintShield, an AgenticSurface, or an AgenticEngine.
-_default_client: Optional[object] = None
-
-
+@public_agentic_boundary
 def set_default_client(client: object) -> None:
-    """Bind a process-wide default so subsequent ``@shield_tool(tool="…")``
-    declarations don't need an explicit ``client=…``. Accepts a
-    ``DeepintShield``, a ``shield.agentic`` surface, or a raw engine."""
-    global _default_client
-    _default_client = client
+    """Register a client for bare ``@shield_tool`` compatibility.
+
+    It deliberately does not replace a global default. A sole live client is
+    selected automatically; multiple clients must pass ``client=...`` or use a
+    request-local ``shield.agentic.run()`` scope.
+    """
+    from .enforcement import register_client
+
+    if hasattr(client, "agentic"):
+        register_client(client)
 
 
 def _resolve_engine(client: object):
-    target = client if client is not None else _default_client
-    if target is None:
-        raise RuntimeError(
-            "shield_tool requires a client - pass client=… or call "
-            "deepintshield.agentic.set_default_client(shield) once at process start."
-        )
+    if client is None:
+        from .enforcement import resolve_engine
+
+        return resolve_engine()
+    target = client
     agentic = getattr(target, "agentic", None)
     if agentic is not None:  # a DeepintShield
         return agentic.engine
@@ -48,6 +52,12 @@ def shield_tool(
     client: Optional[object] = None,
     recovery_cost: str = "",
     rag_provenance: str = "",
+    agent: str = "",
+    permission: str = "",
+    object: str = "",
+    delegation_id: str = "",
+    action: str = "",
+    action_class: str = "",
 ) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
     """Decorator factory. Wrap any function as a PEP-gated tool.
 
@@ -60,25 +70,73 @@ def shield_tool(
     Args:
         tool:           The tool name registered in DeepintShield's
                         Tools & Tiering page.
-        client:         A ``DeepintShield`` / ``shield.agentic`` / engine. May
-                        also be bound globally via ``set_default_client()``.
+        client:         A ``DeepintShield`` / ``shield.agentic`` / engine. A
+                        sole registered client is resolved automatically;
+                        multiple clients require an explicit client or run scope.
         recovery_cost:  Optional autonomy-budget hint: "low"/"medium"/"high".
         rag_provenance: Optional hint when the call uses RAG output.
     """
 
     def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
-        @functools.wraps(fn)
-        def wrapper(*args: Any, **kwargs: Any) -> Any:
-            engine = _resolve_engine(client)
-            kwargs = enforce(
+        def gated(engine: Any, args: tuple, kwargs: dict) -> dict:
+            return enforce(
                 engine,
                 tool,
                 args,
                 kwargs,
                 recovery_cost=recovery_cost,
                 rag_provenance=rag_provenance,
+                tool_callable=fn,
+                agent=agent,
+                permission=permission,
+                object=object,
+                delegation_id=delegation_id,
+                action=action,
+                action_class=action_class,
             )
-            return fn(*args, **kwargs)
+
+        if inspect.isasyncgenfunction(fn):
+            @functools.wraps(fn)
+            async def wrapper(*args: Any, **kwargs: Any):
+                with public_agentic_error_boundary():
+                    engine = _resolve_engine(client)
+                    preflight(engine, tool, fn)
+                    with execution_scope(engine, fn):
+                        kwargs = gated(engine, args, kwargs)
+                        async for item in fn(*args, **kwargs):
+                            yield item
+            return wrapper
+
+        if inspect.iscoroutinefunction(fn):
+            @functools.wraps(fn)
+            async def wrapper(*args: Any, **kwargs: Any) -> Any:
+                with public_agentic_error_boundary():
+                    engine = _resolve_engine(client)
+                    preflight(engine, tool, fn)
+                    with execution_scope(engine, fn):
+                        kwargs = gated(engine, args, kwargs)
+                        return await fn(*args, **kwargs)
+            return wrapper
+
+        if inspect.isgeneratorfunction(fn):
+            @functools.wraps(fn)
+            def wrapper(*args: Any, **kwargs: Any):
+                with public_agentic_error_boundary():
+                    engine = _resolve_engine(client)
+                    preflight(engine, tool, fn)
+                    with execution_scope(engine, fn):
+                        kwargs = gated(engine, args, kwargs)
+                        yield from fn(*args, **kwargs)
+            return wrapper
+
+        @functools.wraps(fn)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            with public_agentic_error_boundary():
+                engine = _resolve_engine(client)
+                preflight(engine, tool, fn)
+                with execution_scope(engine, fn):
+                    kwargs = gated(engine, args, kwargs)
+                    return fn(*args, **kwargs)
 
         return wrapper
 

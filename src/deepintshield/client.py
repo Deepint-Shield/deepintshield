@@ -2,12 +2,19 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Iterable, Mapping
+import threading
+from typing import Any, Iterable, Literal, Mapping, overload
 
 import httpx
 
 from .config import DEFAULT_BASE_URL, ShieldConfig, _normalize_base_url
-from .errors import DeepintShieldBlockedError, DeepintShieldError
+from .errors import (
+    DeepintShieldBlockedError,
+    DeepintShieldError,
+    ErrorCode,
+    _annotate_error,
+)
+from .streaming import ChatCompletionStream, _bounded_response_payload
 from .types import GuardrailResult, RetrievedChunk, ToolInvocation
 
 
@@ -15,7 +22,7 @@ class DeepintShield:
     """
     Unified DeepintShield client.
 
-    >>> shield = DeepintShield(virtual_key="sk-...")
+    >>> shield = DeepintShield(virtual_key="sk-ds-your-virtual-key")
     >>> openai = shield.openai()               # native openai.OpenAI pointed at the gateway
     >>> resp = shield.chat(model="gpt-4o-mini", messages=[...])
     >>> shield.rag.filter(query="...", chunks=[...])
@@ -48,6 +55,7 @@ class DeepintShield:
         self.requester = requester
         self.requester_role = requester_role
         self.persist = persist
+        self._deepintshield_closed = False
         self._client = httpx.Client(timeout=timeout)
 
         from .rag import RAGSurface
@@ -63,13 +71,20 @@ class DeepintShield:
         # constructing a DeepintShield never performs network I/O and never
         # imports pydantic/azure unless agentic features are actually used.
         self._agentic = None
+        self._agentic_lock = threading.Lock()
         # Install non-bypassable enforcement guards for any agent framework that
         # is ALREADY imported (langgraph, crewai, litellm, …) so a compiled graph
         # / built tool can't run ungoverned. Lazy engine ⇒ this does NOT build the
         # agentic surface; it only patches frameworks the app actually uses. Safe
-        # no-op when none are present. Call ``shield.agentic.enforce()`` again if a
-        # framework is imported after the client is created.
-        self._install_agentic_guards()
+        # no-op when none are present; the import guard arms supported frameworks
+        # that are imported later.
+        try:
+            self._install_agentic_guards()
+        except Exception:
+            # Constructor failure must not leave a half-initialized client in
+            # the weak ownership broker or leak its connection pool.
+            self.close()
+            raise
 
     # ─────────────────────────── constructors / context ──────────────────────
 
@@ -108,13 +123,24 @@ class DeepintShield:
         self.close()
 
     def close(self) -> None:
-        self._client.close()
+        if self._deepintshield_closed:
+            return
+        self._deepintshield_closed = True
+        try:
+            from .agentic.enforcement import unregister_client
+
+            unregister_client(self)
+        finally:
+            self._client.close()
 
     # ─────────────────────────── keys and headers ────────────────────────────
 
     def virtual_key_or_raise(self) -> str:
         if not self.virtual_key:
-            raise DeepintShieldError("DEEPINTSHIELD_VIRTUAL_KEY is required")
+            raise DeepintShieldError(
+                "DEEPINTSHIELD_VIRTUAL_KEY is required",
+                code=ErrorCode.VIRTUAL_KEY_MISSING,
+            )
         return self.virtual_key
 
     def api_key(self) -> str:
@@ -123,7 +149,7 @@ class DeepintShield:
     def headers(self, extra: Mapping[str, str] | None = None) -> dict[str, str]:
         out = {"content-type": "application/json", **self.default_headers}
         if self.virtual_key:
-            out["x-bf-vk"] = self.virtual_key
+            out["x-deepintshield-vk"] = self.virtual_key
         if extra:
             out.update(dict(extra))
         return out
@@ -232,20 +258,20 @@ class DeepintShield:
         framework wrappers). All Entra/identity/policy detail is auto-
         discovered from the gateway; the user passes only VK + base_url."""
         if self._agentic is None:
-            from .agentic.surface import AgenticSurface
-            self._agentic = AgenticSurface(self)
+            with self._agentic_lock:
+                if self._agentic is None:
+                    from .agentic.surface import AgenticSurface
+
+                    self._agentic = AgenticSurface(self)
         return self._agentic
 
     def _install_agentic_guards(self) -> None:
         """Install non-bypassable framework guards (compile/tool patches). Lazy
         engine via ``self.agentic.engine`` so this never builds the surface here.
-        Best-effort: never raises, only touches already-imported frameworks."""
-        try:
-            from .agentic.enforcement import install_all
+        Imported supported frameworks must be instrumented successfully."""
+        from .agentic.enforcement import install_all
 
-            install_all(lambda: self.agentic.engine)
-        except Exception:
-            pass
+        install_all(client=self)
 
     def _agent_token(self) -> str | None:
         """Best-effort agent identity token for transparent (L1) traffic.
@@ -333,20 +359,98 @@ class DeepintShield:
         *,
         json_body: Mapping[str, Any] | None = None,
         extra_headers: Mapping[str, str] | None = None,
-    ) -> dict[str, Any]:
-        response = self._client.request(
-            method=method,
-            url=f"{self.base_url}{path}",
-            headers=self.headers(extra_headers),
-            json=json_body,
-        )
+        error_code: str | ErrorCode | None = None,
+        require_object: bool = False,
+    ) -> Any:
+        request_details = {"method": method.upper(), "path": path}
+        if self._deepintshield_closed:
+            raise DeepintShieldError(
+                "DeepintShield client is closed",
+                code=ErrorCode.CLIENT_CLOSED,
+                details=request_details,
+            )
+        try:
+            response = self._client.request(
+                method=method,
+                url=f"{self.base_url}{path}",
+                headers=self.headers(extra_headers),
+                json=json_body,
+            )
+        except httpx.TimeoutException as exc:
+            raise _annotate_error(
+                exc,
+                ErrorCode.TRANSPORT_TIMEOUT,
+                details=request_details,
+            )
+        except httpx.HTTPError as exc:
+            raise _annotate_error(
+                exc,
+                ErrorCode.TRANSPORT_ERROR,
+                details=request_details,
+            )
+        invalid_json = False
         try:
             payload = response.json()
-        except ValueError:
+        except (ValueError, RecursionError):
             payload = {"raw": response.text}
+            invalid_json = True
+        if response.status_code < 400 and require_object and invalid_json:
+            raise DeepintShieldError(
+                "DeepintShield gateway returned a non-JSON response",
+                status_code=response.status_code,
+                payload={"raw": response.text},
+                code=ErrorCode.INVALID_RESPONSE,
+                details=request_details,
+            ) from None
         if response.status_code >= 400:
-            raise DeepintShieldError.from_response(response.status_code, payload)
+            raise DeepintShieldError.from_response(
+                response.status_code,
+                payload if isinstance(payload, dict) else {"data": payload},
+                fallback_code=error_code,
+                details=request_details,
+            )
+        if require_object and not isinstance(payload, dict):
+            raise DeepintShieldError(
+                "DeepintShield gateway returned a non-object JSON response",
+                status_code=response.status_code,
+                payload={"data": payload},
+                code=ErrorCode.INVALID_RESPONSE,
+                details=request_details,
+            )
         return payload
+
+    @overload
+    def chat(
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, Any]],
+        stream: Literal[False] = False,
+        extra_headers: Mapping[str, str] | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]: ...
+
+    @overload
+    def chat(
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, Any]],
+        stream: Literal[True],
+        extra_headers: Mapping[str, str] | None = None,
+        **kwargs: Any,
+    ) -> ChatCompletionStream: ...
+
+    @overload
+    def chat(
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, Any]],
+        stream: bool,
+        extra_headers: Mapping[str, str] | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any] | ChatCompletionStream: ...
 
     def chat(
         self,
@@ -356,14 +460,104 @@ class DeepintShield:
         stream: bool = False,
         extra_headers: Mapping[str, str] | None = None,
         **kwargs: Any,
-    ) -> dict[str, Any]:
-        """Unified chat completion via the gateway OpenAI-compatible endpoint."""
+    ) -> dict[str, Any] | ChatCompletionStream:
+        """Unified chat completion via the gateway OpenAI-compatible endpoint.
+
+        ``stream=False`` returns the decoded response object. ``stream=True``
+        returns a lazy :class:`~deepintshield.streaming.ChatCompletionStream`;
+        use it as a context manager or close it when stopping early.
+        """
+        body = {"model": model, "messages": messages, "stream": stream, **kwargs}
+        if stream:
+            return self._open_chat_stream(body, extra_headers=extra_headers)
         return self.request(
             "POST",
             "/v1/chat/completions",
-            json_body={"model": model, "messages": messages, "stream": stream, **kwargs},
+            json_body=body,
             extra_headers=extra_headers,
+            error_code=ErrorCode.CHAT_REQUEST_FAILED,
+            require_object=True,
         )
+
+    def _open_chat_stream(
+        self,
+        body: Mapping[str, Any],
+        *,
+        extra_headers: Mapping[str, str] | None,
+    ) -> ChatCompletionStream:
+        path = "/v1/chat/completions"
+        request_details: dict[str, Any] = {"method": "POST", "path": path}
+        if self._deepintshield_closed:
+            raise DeepintShieldError(
+                "DeepintShield client is closed",
+                code=ErrorCode.CLIENT_CLOSED,
+                details=request_details,
+            )
+        try:
+            request = self._client.build_request(
+                "POST",
+                f"{self.base_url}{path}",
+                headers=self.headers(extra_headers),
+                json=body,
+            )
+            response = self._client.send(request, stream=True)
+        except httpx.TimeoutException as exc:
+            raise _annotate_error(
+                exc,
+                ErrorCode.TRANSPORT_TIMEOUT,
+                details=request_details,
+            )
+        except httpx.HTTPError as exc:
+            raise _annotate_error(
+                exc,
+                ErrorCode.TRANSPORT_ERROR,
+                details=request_details,
+            )
+
+        if response.status_code >= 400:
+            payload, truncated = _bounded_response_payload(response)
+            if truncated:
+                request_details["response_truncated"] = True
+            raise DeepintShieldError.from_response(
+                response.status_code,
+                payload,
+                fallback_code=ErrorCode.CHAT_REQUEST_FAILED,
+                details=request_details,
+            )
+
+        content_type = response.headers.get("content-type", "").lower()
+        media_type = content_type.partition(";")[0].strip()
+        if media_type != "text/event-stream":
+            payload, truncated = _bounded_response_payload(response)
+            if truncated:
+                request_details["response_truncated"] = True
+            request_details["content_type"] = content_type
+            if isinstance(payload, dict) and any(
+                payload.get(key) is not None
+                for key in ("error", "code", "error_code")
+            ):
+                raise DeepintShieldError.from_response(
+                    response.status_code,
+                    payload,
+                    fallback_code=ErrorCode.CHAT_REQUEST_FAILED,
+                    details=request_details,
+                )
+            raise DeepintShieldError(
+                "Chat streaming response is not Server-Sent Events",
+                status_code=response.status_code,
+                payload=payload,
+                code=ErrorCode.CHAT_STREAM_INVALID_EVENT,
+                details=request_details,
+            )
+
+        if self._deepintshield_closed:
+            response.close()
+            raise DeepintShieldError(
+                "DeepintShield client is closed",
+                code=ErrorCode.CLIENT_CLOSED,
+                details=request_details,
+            )
+        return ChatCompletionStream(response, self, details=request_details)
 
     def evaluate_guardrail(
         self,
@@ -412,7 +606,13 @@ class DeepintShield:
             body["actor_team_id"] = actor_team_id
         if metadata:
             body["metadata"] = dict(metadata)
-        payload = self.request("POST", "/api/guardrails/evaluate", json_body=body)
+        payload = self.request(
+            "POST",
+            "/api/guardrails/evaluate",
+            json_body=body,
+            error_code=ErrorCode.GUARDRAIL_EVALUATION_FAILED,
+            require_object=True,
+        )
         return GuardrailResult.from_response(stage, payload)
 
     def guard(

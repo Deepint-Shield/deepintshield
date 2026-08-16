@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from ..errors import ErrorCode, _dependency_error
 from ..transport import connection
 
 if TYPE_CHECKING:
@@ -18,7 +19,11 @@ def client(shield: "DeepintShield", *, identity: bool = False, **kwargs: Any):
     try:
         from openai import AsyncOpenAI
     except ImportError as exc:  # pragma: no cover
-        raise ImportError("Install openai: pip install 'deepintshield[openai]'") from exc
+        raise _dependency_error(
+            "Install openai: pip install 'deepintshield[openai]'",
+            code=ErrorCode.FRAMEWORK_DEPENDENCY_MISSING,
+            component="openai_agents",
+        ) from exc
     base_url, headers = connection(shield, identity=identity)
     return AsyncOpenAI(
         base_url=kwargs.pop("base_url", base_url),
@@ -36,8 +41,10 @@ def apply(shield: "DeepintShield", *, use_for_tracing: bool = False, identity: b
     try:
         from agents import set_default_openai_client
     except ImportError as exc:  # pragma: no cover
-        raise ImportError(
-            "Install the OpenAI Agents SDK: pip install 'deepintshield[openai-agents]'"
+        raise _dependency_error(
+            "Install the OpenAI Agents SDK: pip install 'deepintshield[openai-agents]'",
+            code=ErrorCode.FRAMEWORK_DEPENDENCY_MISSING,
+            component="openai_agents",
         ) from exc
     c = client(shield, identity=identity, **kwargs)
     set_default_openai_client(c, use_for_tracing=use_for_tracing)
