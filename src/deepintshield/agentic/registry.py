@@ -2779,6 +2779,7 @@ def discover(
     auto_provision: bool = True,
     sync: bool = False,
     name: str = "",
+    framework: str = "",
     timeout: float = _TIMEOUT_SECONDS,
     _bootstrap_without_workload_proof: bool = False,
 ) -> dict[str, Any]:
@@ -2790,6 +2791,12 @@ def discover(
     acting for (the server resolves it to a ``user:…`` subject);
     ``auto_provision`` lets the server write the ``agent → organization`` /
     ``tool → server`` tuples through the audited relationship store.
+
+    ``framework`` overrides the auto-detected label. Detection reads an
+    object's shape, so a bare list of callables is indistinguishable from a
+    list of CrewAI tools and is reported as ``crewai``. Pass this when you know
+    what the agent actually is, so the Registry does not file it under a
+    framework the operator never used.
 
     Default is fire-and-forget on a **daemon** thread with a 3s timeout, so an
     explicit inventory report stays off the invocation path and never holds up
@@ -2805,7 +2812,7 @@ def discover(
     # anything to the developer's code.
     try:
         source = manifest if isinstance(manifest, dict) else obj
-        payload = describe_network(source, name=name)
+        payload = describe_network(source, name=name, framework=framework)
     except Exception as exc:  # pragma: no cover - describe_network is fail-soft
         log.debug("registry discovery skipped (describe failed: %s)", exc)
         return {"dispatched": False, "error": "registry_discovery_invalid"}
@@ -2880,6 +2887,7 @@ def discover(
             bootstrap_without_workload_proof=_bootstrap_without_workload_proof,
         )
         if result.get("error"):
+            _log_enrolment_state(result)
             _unmark(dedupe_key)
         else:
             _mark_registration_capture_ready(engine, payload)
@@ -2971,6 +2979,80 @@ def _unmark(dedupe_key: str) -> None:
         _seen.pop(dedupe_key, None)
 
 
+# Remedies keyed by the enrolment lifecycle code the server returns. Each names
+# the ONE thing the developer has to do; a code with no entry is left alone
+# rather than guessed at.
+_ENROLMENT_REMEDIES = {
+    "agent_registration_pending": (
+        "waiting for an administrator to approve its registration"
+    ),
+    "agent_registration_denied": (
+        "its registration was denied; enrol under a different agent name"
+    ),
+    "agent_blueprint_review_pending": (
+        "its code changed and the new blueprint is awaiting review"
+    ),
+    "agent_blueprint_review_denied": (
+        "its code changed and the new blueprint was rejected"
+    ),
+    "blueprint_coverage_incomplete": (
+        "discovery could not read the source of every declared tool; "
+        "pass the tool callables rather than the agent instance"
+    ),
+    "agent_not_registered": (
+        "no registration exists for this agent on this virtual key"
+    ),
+    "agent_quarantined": (
+        "the agent is quarantined; review its blueprint scan to restore it"
+    ),
+    # The remedy is the whole point of this code: the name IS taken, by a row
+    # this key does not own, and the fix is to pick a different one. A bare
+    # 403 sent developers looking at the key instead.
+    "agent_name_conflict": (
+        "an agent of this name already exists on another key; choose a "
+        "different agent_name (or DEEPINTSHIELD_AGENT_NAME)"
+    ),
+}
+
+_enrolment_logged: set[str] = set()
+_enrolment_log_lock = threading.Lock()
+
+
+def _log_enrolment_state(result: Any) -> None:
+    """Say plainly, once per process per state, that governed calls will fail.
+
+    A developer's first signal that enrolment is pending, denied or quarantined
+    used to be an unrelated-looking authorization failure on their first
+    governed call, sometimes minutes later and with five very different causes
+    behind one message. Discovery already learns the real state, so it is the
+    cheapest honest place to say so - and because it runs off the invocation
+    path, saying so costs the application nothing.
+
+    Only enrolment LIFECYCLE codes are reported. Transport failures are
+    ordinary, already logged at debug, and would otherwise turn a flaky network
+    into a stream of alarming warnings.
+    """
+    if not isinstance(result, dict):
+        return
+    code = str(result.get("error") or "").strip()
+    remedy = _ENROLMENT_REMEDIES.get(code)
+    if remedy is None:
+        return
+    with _enrolment_log_lock:
+        if code in _enrolment_logged:
+            return
+        _enrolment_logged.add(code)
+    review_url = str(result.get("review_url") or "").strip()
+    suffix = f" Review: {review_url}" if review_url else ""
+    log.warning(
+        "DeepintShield: this agent is not governed yet - %s (%s)."
+        " Governed calls will be denied until this is resolved.%s",
+        remedy,
+        code,
+        suffix,
+    )
+
+
 def _post_and_release(
     engine: Any,
     payload: dict[str, Any],
@@ -2991,6 +3073,7 @@ def _post_and_release(
             bootstrap_without_workload_proof=bootstrap_without_workload_proof,
         )
         if result.get("error"):
+            _log_enrolment_state(result)
             _unmark(dedupe_key)
         else:
             succeeded = True
@@ -3140,9 +3223,13 @@ def _defer_registration_capture(engine: Any, tool_key: str) -> None:
 
 def _set_registration_capture_error(engine: Any, code: object) -> None:
     normalized = normalize_agentic_error_code(code, "")
-    # Preserve only the stable first-run admission code here. Other discovery
+    # Preserve only the stable first-run admission codes here. Other discovery
     # failures keep the established blueprint_scan_unavailable fallback.
-    if normalized != "agent_registration_quota_exceeded":
+    if normalized not in {
+        "agent_registration_quota_exceeded",
+        "agent_name_required",
+        "blueprint_coverage_incomplete",
+    }:
         normalized = ""
     try:
         setattr(engine, "_registration_capture_error_code", normalized)
@@ -3276,6 +3363,12 @@ def ensure_registration_capture(
             # Proof-less registration is deliberately limited to an explicit
             # selector. Inventing a shared ``sdk-agent`` would create ambiguous
             # registry rows and cannot pass the server's bootstrap middleware.
+            #
+            # Say WHICH thing is missing. This used to surface as
+            # blueprint_scan_unavailable, which sent developers to look at the
+            # scanner when the real answer is that the client was never given
+            # an agent name to register under.
+            _set_registration_capture_error(engine, "agent_name_required")
             _defer_registration_capture(engine, tool_key)
             return False
         manifest = _minimal_registration_manifest(

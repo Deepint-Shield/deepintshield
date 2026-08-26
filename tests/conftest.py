@@ -38,6 +38,11 @@ def shield_factory(mock_transport):
                 return httpx.Response(200, json={"blueprint_scan_status": "complete"})
             return response
 
+        # An agent NAME is an identity, and the SDK no longer invents a shared
+        # default for one. Governed execution registers under it, so every
+        # fixture client needs one exactly as a real workload does; a test that
+        # cares about a specific name passes its own.
+        client_kwargs.setdefault("agent_name", "deepintshield-test-agent")
         shield = DeepintShield(virtual_key="sk-ds-test", **client_kwargs)
         shield._client.close()
         shield._client = httpx.Client(transport=mock_transport(with_blueprint_ack))

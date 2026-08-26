@@ -37,7 +37,11 @@ def connection_headers(
     """
     h = dict(shield.headers())  # content-type + x-deepintshield-vk + default_headers
     h.setdefault("x-deepintshield-app", shield.app_name)
-    h.setdefault("x-deepintshield-agent", shield.agent_name)
+    # Omitted rather than sent empty when unset: an empty selector is not an
+    # identity, and sending one would have the gateway resolve "the agent this
+    # key happens to be bound to" instead of the one the caller meant.
+    if str(getattr(shield, "agent_name", "") or "").strip():
+        h.setdefault("x-deepintshield-agent", shield.agent_name)
     h.setdefault("x-deepintshield-requester", shield.requester)
     h.setdefault("x-deepintshield-requester-role", shield.requester_role)
     if identity:

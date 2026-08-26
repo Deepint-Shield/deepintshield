@@ -432,7 +432,7 @@ def handler(request):
         })
     return httpx.Response(404)
 
-shield = DeepintShield(virtual_key="sk-ds-test")
+shield = DeepintShield(virtual_key="sk-ds-test", agent_name="deepintshield-test-agent")
 shield._client.close()
 shield._client = httpx.Client(transport=httpx.MockTransport(handler))
 try:

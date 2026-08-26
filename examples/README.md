@@ -10,12 +10,18 @@ first:
 
 ```bash
 export DEEPINTSHIELD_VIRTUAL_KEY="<virtual-key>"
+# REQUIRED for every agentic example. The agent name is this workload's
+# identity in the Registry and has no default: two workloads sharing a name
+# share one registration, and an unnamed client stops with
+# `agent_name_required` rather than resolving to whichever agent the key
+# happens to be bound to.
+export DEEPINTSHIELD_AGENT_NAME="my-agent"
 # optional: point at a self-hosted / staging gateway
 export DEEPINTSHIELD_BASE_URL="https://gateway.example.com"
-# stable Agentic identity and acting principal
-export DEEPINTSHIELD_AGENT_NAME="my-agent"
+# optional: the acting user or service account
 export DEEPINTSHIELD_REQUESTER="user@example.com"
 
+python examples/agentic/status.py        # is this agent governed yet?
 python examples/openai/chat.py
 python examples/agentic/decorator.py
 python examples/crewai/transparent.py
@@ -37,6 +43,8 @@ explanation; examples do not catch normal governance outcomes to reformat them.
 
 | Folder | What it shows |
 | --- | --- |
+| `agentic/status.py` | Startup healthcheck - refuse to serve traffic this agent is not enrolled for |
+| `agentic/obligations.py` | What each MASK obligation redacts, positional arguments included |
 | `agentic/decorator.py` | Advanced explicit per-function `@shield.agentic.tool` API |
 | `agentic/decide.py` | Advanced direct PDP probe returning the raw verdict |
 | `agentic/identity.py` | Advanced diagnostics for the discovered Entra/ZeroID/OIDC binding |

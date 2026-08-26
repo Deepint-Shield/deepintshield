@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "deepintshield"
-version = "2.5.1"
+version = "2.7.0"
 description = "Unified Python SDK for routing chat, RAG, agentic tool-gating, identity, and MCP traffic through DeepintShield - drop-in across the top agentic frameworks."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -44,6 +44,10 @@ temporal = ["temporalio>=1.7.0"]
 strands = ["strands-agents>=0.1.0"]
 google-adk = ["google-adk>=0.1.0"]
 azure = ["azure-identity>=1.16.0"]
+# Proof-of-possession (DPoP, RFC 9449) for agent workload tokens. Optional
+# because a deployment whose identity provider does not bind tokens has nothing
+# to prove possession of, and should not be made to carry a crypto dependency.
+dpop = ["cryptography>=42.0.0"]
 mcp = ["mcp>=1.29,<2"]
 langchain-mcp = [
   "langchain-mcp-adapters>=0.3.2,<0.4",
@@ -74,6 +78,7 @@ all = [
   "strands-agents>=0.1.0",
   "google-adk>=0.1.0",
   "azure-identity>=1.16.0",
+  "cryptography>=42.0.0",
 ]
 dev = [
   "pytest>=8.0",
@@ -83,7 +88,7 @@ dev = [
 
 [project.urls]
 Homepage = "https://app.deepintshield.com"
-Documentation = "https://docs.deepintshield.com"
+Documentation = "https://aidocs.deepintshield.com"
 Examples = "https://github.com/deepintai/deepintshield/tree/main/examples"
 Source = "https://github.com/deepintai/deepintshield"
 

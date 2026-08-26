@@ -22,7 +22,11 @@ class ShieldConfig:
     base_url: str = DEFAULT_BASE_URL
     timeout: float = 30.0
     app_name: str = "deepintshield"
-    agent_name: str = "deepintshield-agent"
+    # No default. A shared literal meant every unnamed workload in a workspace
+    # claimed the same registry row: the first one to run enrolled it, and the
+    # second got a bare 403 with nothing pointing at the collision. The name is
+    # an identity, so it has to be chosen, not inherited.
+    agent_name: str = ""
     requester: str = "sdk-user"
     requester_role: str = "member"
     persist: bool = True
@@ -51,7 +55,7 @@ class ShieldConfig:
             base_url=_normalize_base_url(base_url),
             timeout=timeout,
             app_name=os.getenv("DEEPINTSHIELD_APP_NAME", "deepintshield"),
-            agent_name=os.getenv("DEEPINTSHIELD_AGENT_NAME", "deepintshield-agent"),
+            agent_name=(os.getenv("DEEPINTSHIELD_AGENT_NAME") or "").strip(),
             requester=os.getenv("DEEPINTSHIELD_REQUESTER", "sdk-user"),
             requester_role=os.getenv("DEEPINTSHIELD_REQUESTER_ROLE", "member"),
             persist=os.getenv("DEEPINTSHIELD_PERSIST", "true").lower() not in {"0", "false", "no"},

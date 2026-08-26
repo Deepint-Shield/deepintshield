@@ -100,6 +100,9 @@ class ErrorCode(str, Enum):
     AGENT_REGISTRATION_NOT_READY = "agent_registration_not_ready"
     AGENT_REGISTRATION_APPROVAL_REQUIRED = "agent_registration_approval_required"
     AGENT_REGISTRATION_QUOTA_EXCEEDED = "agent_registration_quota_exceeded"
+    AGENT_NAME_REQUIRED = "agent_name_required"
+    AGENT_NAME_CONFLICT = "agent_name_conflict"
+    AGENT_QUARANTINED = "agent_quarantined"
     AGENT_REGISTRATION_REVIEW_STALE = "agent_registration_review_stale"
     AGENT_REGISTRATION_REVIEW_CONFLICT = "agent_registration_review_conflict"
     AGENT_APPROVAL_PENDING = "agent_approval_pending"
@@ -262,6 +265,9 @@ _DEFINITIONS = (
     _definition(ErrorCode.AGENT_REGISTRATION_NOT_READY, ErrorCategory.AGENTIC, "This agent's registration review is incomplete.", action="Complete the verified identity, code, and access review.", dashboard_path=_REGISTRATIONS),
     _definition(ErrorCode.AGENT_REGISTRATION_APPROVAL_REQUIRED, ErrorCategory.AGENTIC, "This agent requires registration approval.", action="Review and approve the captured registration in Agentic.", dashboard_path=_REGISTRATIONS),
     _definition(ErrorCode.AGENT_REGISTRATION_QUOTA_EXCEEDED, ErrorCategory.AGENTIC, "This reporting key has reached its pending-registration limit.", action="Approve or deny pending registrations, then rerun discovery.", dashboard_path=_OVERVIEW),
+    _definition(ErrorCode.AGENT_NAME_REQUIRED, ErrorCategory.AGENTIC, "This workload has no agent name, so it has no identity to govern.", action="Pass agent_name=\"…\" to DeepintShield(…) (or set DEEPINTSHIELD_AGENT_NAME) and rerun.", dashboard_path=_OVERVIEW),
+    _definition(ErrorCode.AGENT_NAME_CONFLICT, ErrorCategory.AGENTIC, "An agent with this name already exists in the workspace and is not associated with this key.", action="Choose a different agent_name (or DEEPINTSHIELD_AGENT_NAME), or associate this key with the existing agent in the Registry.", dashboard_path=_REGISTRATIONS),
+    _definition(ErrorCode.AGENT_QUARANTINED, ErrorCategory.AGENTIC, "This agent is quarantined: its code changed and the new blueprint is unapproved.", action="Review the agent's blueprint scan to restore it.", dashboard_path=_BLUEPRINTS),
     _definition(ErrorCode.AGENT_REGISTRATION_REVIEW_STALE, ErrorCategory.AGENTIC, "The agent registration changed during review.", action="Reload the latest registration evidence before deciding.", dashboard_path=_REGISTRATIONS),
     _definition(ErrorCode.AGENT_REGISTRATION_REVIEW_CONFLICT, ErrorCategory.AGENTIC, "The agent registration changed during review.", action="Reload the latest registration evidence before deciding.", dashboard_path=_REGISTRATIONS),
     _definition(ErrorCode.AGENT_APPROVAL_PENDING, ErrorCategory.AGENTIC, "This operation is waiting for approval.", action="Approve or deny the pending action in Agentic.", dashboard_path=_APPROVALS),

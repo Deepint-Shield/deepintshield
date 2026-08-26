@@ -41,7 +41,7 @@ class DeepintShield:
         timeout: float = 30.0,
         default_headers: Mapping[str, str] | None = None,
         app_name: str = "deepintshield",
-        agent_name: str = "deepintshield-agent",
+        agent_name: str = "",
         requester: str = "sdk-user",
         requester_role: str = "member",
         persist: bool = True,

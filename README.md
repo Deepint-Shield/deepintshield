@@ -12,8 +12,9 @@ Google ADK, Hermes Agent, OpenClaw) while automatically routing traffic through
 the DeepIntShield gateway for guardrails, RAG filtering, agentic tool control,
 and agent identity.
 
-You pass a virtual key and base URL, plus a stable `agent_name` when the agent
-differs from the SDK default (`deepintshield-agent`). The Agentic registry owns
+You pass a virtual key and base URL, plus a stable `agent_name` — **required**
+for agentic governance, with no default, because the name is the workload's
+identity in the registry. The Agentic registry owns
 the canonical subject, optional identity-provider selection, policy attributes,
 and many-to-many Virtual Key associations; the selected provider configuration
 supplies tenant and scope details. The SDK discovers that profile automatically,
@@ -61,6 +62,7 @@ pip install 'deepintshield[strands]'             # AWS Strands integration
 pip install 'deepintshield[google-adk]'          # Google ADK integration
 pip install 'deepintshield[azure]'               # azure-identity for Entra agent identity
 pip install 'deepintshield[mcp]'                # official MCP Python client
+pip install 'deepintshield[dpop]'               # DPoP proof-of-possession for agent tokens
 pip install 'deepintshield[all]'                # everything
 ```
 
@@ -70,7 +72,7 @@ pip install 'deepintshield[all]'                # everything
 export DEEPINTSHIELD_VIRTUAL_KEY="<virtual-key>"
 # Optional - point at a self-hosted or staging gateway.
 export DEEPINTSHIELD_BASE_URL="https://gateway.example.com"
-# Stable Agentic registry key and acting principal.
+# Agentic registry identity (required for agentic governance) and acting principal.
 export DEEPINTSHIELD_AGENT_NAME="my-agent"
 export DEEPINTSHIELD_REQUESTER="user@example.com"
 ```
@@ -156,7 +158,7 @@ except DeepintShieldError as error:
 Provider/framework compatibility paths may preserve a native exception type;
 use `get_exception_error_code(error)` to read an SDK annotation without
 mistaking an unrelated third-party `.code` value for DeepIntShield metadata.
-See the [complete error reference](https://docs.deepintshield.com/sdk/error-codes/)
+See the [complete error reference](https://aidocs.deepintshield.com/sdk/error-codes/)
 for categories, descriptions, retry guidance, and safe diagnostic handling.
 
 ### OpenAI
@@ -363,6 +365,25 @@ app = g.compile()
 app.invoke({...})
 ```
 
+Give every governed workload its own `agent_name`. There is no default: two
+workloads sharing a name claim the same registry row, and a client with no name
+stops with `agent_name_required` rather than resolving to whichever agent its
+virtual key happens to be bound to.
+
+Check enrolment before serving traffic instead of discovering it one denied call
+at a time:
+
+```python
+state = shield.agentic.status()
+if state["state"] != "live":          # live | pending | denied | quarantined
+    raise SystemExit(                 # | not_registered | unknown
+        f"agent not governed: {state['state']} - {state.get('reason', '')}"
+    )
+```
+
+Discovery also logs the enrolment lifecycle state once per process, so a pending
+or quarantined agent says so at startup rather than at the first tool call.
+
 For a new `DEEPINTSHIELD_AGENT_NAME`, the first native execution captures the
 agent and topology, then stops with `agent_registration_pending`. Open the
 registration in **Agentic → Work Queue**, then use the single **Review** form
@@ -469,6 +490,36 @@ def write_ledger(row: dict) -> dict:
 
 decision = shield.agentic.decide(tool="db.write", args={"amount": 12})
 ```
+
+### Obligations
+
+A verdict can Allow a call *and* attach an obligation: the tool runs, with
+protected values redacted before the function body sees its arguments.
+
+| Obligation | Redacts |
+| --- | --- |
+| `mask:pii` | Recognised personal-data fields |
+| `redact:secrets` | Credential-shaped field names, and credential-shaped values anywhere in a string argument (`sk-…`, `ghp_…`, `AKIA…`, `xox…`, JWTs, PEM keys) |
+| `redact:phi` | Diagnosis, medication, MRN, patient and insurance identifiers |
+| `redact:card-numbers` | Luhn-valid card numbers in any string value; ordinary long numbers are left alone |
+| `redact:bank-accounts` | Account number, IBAN, routing number, sort code, SWIFT/BIC |
+| `redact:value` | Value-carrying fields (`value`, `secret_value`, `plaintext`, …) — paired by the secrets templates with a result-side fingerprint-only rule the gateway enforces |
+
+Redaction covers **positional and keyword arguments alike**, so `send(email)`
+and `send(email=…)` are protected identically — the calling convention cannot
+opt out of the obligation. Arguments the SDK cannot bind to a parameter name
+pass through unchanged rather than being guessed at, and the argument digest is
+computed from the original call so redaction never invalidates a pinned
+approval. An unrecognised obligation is a local no-op and stays the gateway's to
+enforce.
+
+### Proof-of-possession
+
+When a workspace identity provider requires it, the agent token is bound to a
+key this process holds and every request carries a fresh DPoP proof (RFC 9449),
+so a token lifted from a log is useless without the key. Install
+`deepintshield[dpop]`; the key is ephemeral and per-process, never written to
+disk.
 
 ### Optional risk signals (OWASP Agentic gap operands)
 

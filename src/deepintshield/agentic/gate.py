@@ -25,7 +25,7 @@ from .errors import (
     normalize_agentic_error_code,
 )
 from .identity import obo_actor_chain
-from .obligations import apply_obligations, digest
+from .obligations import apply_obligations, apply_obligations_to_call, digest
 from .types import ContextBag, Decision, DelegationContext, Verdict
 
 if TYPE_CHECKING:
@@ -70,7 +70,11 @@ def preflight(
             getattr(engine, "_registration_capture_error_code", ""),
             "",
         )
-        if capture_code != "agent_registration_quota_exceeded":
+        if capture_code not in {
+            "agent_registration_quota_exceeded",
+            "agent_name_required",
+            "blueprint_coverage_incomplete",
+        }:
             capture_code = "blueprint_scan_unavailable"
         raise GovernanceConfigurationError(code=capture_code) from None
 
@@ -201,7 +205,9 @@ def enforce(
 ) -> dict[str, Any]:
     """``resolve`` + apply MASK obligations to ``kwargs``.
 
-    Returns the (possibly masked) kwargs to forward to the tool body.
+    Returns the (possibly masked) kwargs to forward to the tool body. Kept for
+    callers that pass everything by keyword; ``enforce_call`` is the complete
+    form and masks positional arguments too.
     """
     decision = resolve(
         engine,
@@ -223,4 +229,49 @@ def enforce(
     return apply_obligations(kwargs, decision.obligations)
 
 
-__all__ = ["preflight", "resolve", "enforce"]
+def enforce_call(
+    engine: Any,
+    tool_name: str,
+    args: tuple,
+    kwargs: dict[str, Any],
+    *,
+    recovery_cost: str = "",
+    rag_provenance: str = "",
+    tool_fingerprint: str = "",
+    tool_callable: Any = None,
+    agent: str = "",
+    permission: str = "",
+    object: str = "",
+    delegation_id: str = "",
+    action: str = "",
+    action_class: str = "",
+    prompt: str = "",
+) -> "tuple[tuple, dict[str, Any]]":
+    """``resolve`` + apply MASK obligations to the WHOLE call.
+
+    ``enforce`` masks only keyword arguments, which made a MASK verdict
+    bypassable by calling the tool positionally - and the caller picks the
+    calling convention, so the obligation was effectively optional. This form
+    redacts positionals too and returns ``(args, kwargs)`` to forward.
+    """
+    decision = resolve(
+        engine,
+        tool_name,
+        args,
+        kwargs,
+        recovery_cost=recovery_cost,
+        rag_provenance=rag_provenance,
+        tool_fingerprint=tool_fingerprint,
+        tool_callable=tool_callable,
+        agent=agent,
+        permission=permission,
+        object=object,
+        delegation_id=delegation_id,
+        action=action,
+        action_class=action_class,
+        prompt=prompt,
+    )
+    return apply_obligations_to_call(tool_callable, args, kwargs, decision.obligations)
+
+
+__all__ = ["preflight", "resolve", "enforce", "enforce_call"]

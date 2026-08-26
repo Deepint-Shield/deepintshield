@@ -25,7 +25,6 @@ from .types import ContextBag, Decision, DelegationContext, VKCredentialInfo
 if TYPE_CHECKING:
     from ..client import DeepintShield
 
-
 class AgenticSurface:
     """``shield.agentic`` - agentic (PDP) tool gating across frameworks."""
 
@@ -200,14 +199,23 @@ class AgenticSurface:
         auto_provision: bool = True,
         sync: bool = False,
         name: str = "",
+        framework: str = "",
     ) -> dict:
         """Report an agent network's topology to the GAF registry.
 
         Called automatically after any graph compiles / ``govern()`` runs, so
         Registry → Agents | Tools | Networks fills itself in. Call it explicitly
         to attach the acting human (``principal_email=…``), to name the network,
-        or to block on the result (``sync=True``) in a test. Fire-and-forget and
-        never raises."""
+        to label the framework (``framework=…``, otherwise auto-detected), or to
+        block on the result (``sync=True``) in a test. Fire-and-forget and never
+        raises.
+
+        A discovery that comes back reporting an enrolment lifecycle state -
+        pending, denied, quarantined - is logged once per process by the
+        reporter itself (see ``registry._log_enrolment_state``), so a developer
+        learns why governed calls will be denied at the point the problem is
+        created rather than one authorization failure at a time. Nothing about
+        that diagnostic blocks: discovery stays off the invocation path."""
         from .registry import discover as _discover
 
         return _discover(
@@ -218,7 +226,38 @@ class AgenticSurface:
             auto_provision=auto_provision,
             sync=sync,
             name=name,
+            framework=framework,
         )
+
+    @public_agentic_boundary
+    def status(self) -> dict:
+        """What state this workload's enrolment is in, from the server.
+
+        Returns ``{"state": …, "reason": …, "action": …, "review_url": …}``
+        where state is one of ``live``, ``pending``, ``denied``,
+        ``quarantined`` or ``not_registered``. Use it in a startup healthcheck
+        so a workload can refuse to serve traffic it knows will be denied,
+        rather than discovering that one governed call at a time."""
+        parent = self._parent_ref()
+        if parent is None:
+            return {"state": "unknown", "reason": "the SDK client has been closed"}
+        try:
+            from ..transport import connection_headers
+
+            response = parent._client.get(
+                f"{parent.base_url}/api/agentic-new/registry/self",
+                headers=connection_headers(parent),
+                timeout=parent.timeout,
+            )
+            if response.status_code >= 400:
+                return {
+                    "state": "unknown",
+                    "reason": f"the gateway returned {response.status_code}",
+                }
+            body = response.json()
+            return body if isinstance(body, dict) else {"state": "unknown"}
+        except Exception as exc:  # network/transport - never raise from status()
+            return {"state": "unknown", "reason": str(exc)}
 
     # ── direct decide ──────────────────────────────────────────────────────
 

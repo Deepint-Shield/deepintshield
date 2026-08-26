@@ -12,9 +12,21 @@ def test_connection_points_at_gateway_with_vk():
     assert headers["x-deepintshield-vk"] == "sk-ds-x"
     # Attribution rides as headers for transparent (L1) traffic.
     assert headers["x-deepintshield-app"] == "deepintshield"
-    assert headers["x-deepintshield-agent"] == "deepintshield-agent"
+    # No agent name configured means NO agent attribution. There used to be a
+    # "deepintshield-agent" default, which made every unnamed workload on the
+    # estate share one attribution identity - so the header said something the
+    # platform could not act on. Absent is the honest answer.
+    assert "x-deepintshield-agent" not in headers
     # Identity is opt-in so chat never blocks on discovery.
     assert "X-Agent-Token" not in headers
+
+
+def test_connection_carries_the_configured_agent_name():
+    shield = DeepintShield(
+        virtual_key="sk-ds-x", base_url="http://gw.example", agent_name="billing-bot"
+    )
+    _base, headers = shield.connection()
+    assert headers["x-deepintshield-agent"] == "billing-bot"
 
 
 def test_connection_extra_headers_merge():

@@ -15,7 +15,7 @@ from typing import Any, Callable, Optional
 
 from .errors import public_agentic_boundary, public_agentic_error_boundary
 from .execution import execution_scope
-from .gate import enforce, preflight
+from .gate import enforce_call, preflight
 
 @public_agentic_boundary
 def set_default_client(client: object) -> None:
@@ -78,8 +78,11 @@ def shield_tool(
     """
 
     def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
-        def gated(engine: Any, args: tuple, kwargs: dict) -> dict:
-            return enforce(
+        # Returns BOTH argument groups: a MASK verdict has to reach positional
+        # arguments as well, or the caller chooses whether the obligation
+        # applies simply by how they spell the call.
+        def gated(engine: Any, args: tuple, kwargs: dict) -> "tuple[tuple, dict]":
+            return enforce_call(
                 engine,
                 tool,
                 args,
@@ -102,7 +105,7 @@ def shield_tool(
                     engine = _resolve_engine(client)
                     preflight(engine, tool, fn)
                     with execution_scope(engine, fn):
-                        kwargs = gated(engine, args, kwargs)
+                        args, kwargs = gated(engine, args, kwargs)
                         async for item in fn(*args, **kwargs):
                             yield item
             return wrapper
@@ -114,7 +117,7 @@ def shield_tool(
                     engine = _resolve_engine(client)
                     preflight(engine, tool, fn)
                     with execution_scope(engine, fn):
-                        kwargs = gated(engine, args, kwargs)
+                        args, kwargs = gated(engine, args, kwargs)
                         return await fn(*args, **kwargs)
             return wrapper
 
@@ -125,7 +128,7 @@ def shield_tool(
                     engine = _resolve_engine(client)
                     preflight(engine, tool, fn)
                     with execution_scope(engine, fn):
-                        kwargs = gated(engine, args, kwargs)
+                        args, kwargs = gated(engine, args, kwargs)
                         yield from fn(*args, **kwargs)
             return wrapper
 
@@ -135,7 +138,7 @@ def shield_tool(
                 engine = _resolve_engine(client)
                 preflight(engine, tool, fn)
                 with execution_scope(engine, fn):
-                    kwargs = gated(engine, args, kwargs)
+                    args, kwargs = gated(engine, args, kwargs)
                     return fn(*args, **kwargs)
 
         return wrapper

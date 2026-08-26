@@ -105,6 +105,21 @@ _GAF_FIELDS = frozenset(
         "action_class",
     }
 )
+def _prompt_digest(prompt: object) -> str:
+    """SHA-256 of a prompt, or "" when there is none.
+
+    The prompt itself never leaves the process by default. A digest still lets
+    the server bind a decision to the exact text that drove it and notice when
+    the same verdict is being replayed against different input, without the
+    gateway ever holding the words - which is the zero-retention posture the
+    rest of this path already keeps.
+    """
+    text = str(prompt or "").strip()
+    if not text:
+        return ""
+    return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 class AgenticEngine:
     """Low-level gateway runtime for the canonical Agentic-New GAF data plane.
 
@@ -636,7 +651,9 @@ class AgenticEngine:
         resp = self._http.post(
             f"{self.gateway_url}/api/agentic-new/decide",
             json=payload,
-            headers=self._headers(include_agent_token=True),
+            headers=self._headers(
+                include_agent_token=True, path="/api/agentic-new/decide"
+            ),
         )
         if self._route_not_implemented(resp):
             # _gaf_payload() normally runs credential discovery first. The
@@ -700,7 +717,9 @@ class AgenticEngine:
         resp = self._http.post(
             f"{self.gateway_url}/api/agentic-security/decide",
             json=payload,
-            headers=self._headers(include_agent_token=True),
+            headers=self._headers(
+                include_agent_token=True, path="/api/agentic-security/decide"
+            ),
         )
         if self._route_not_implemented(resp) or self._endpoint_absent(
             resp, "legacy PDP"
@@ -785,6 +804,25 @@ class AgenticEngine:
             # replay deterministic.
             "execution_id": self.execution_id or str(dc.session_id or "").strip(),
             "session_id": str(dc.session_id or self.session_id).strip(),
+            # ── context the canonical PDP could not previously see ──────────
+            #
+            # These four travelled only to the legacy engine, so the SDK's own
+            # docstrings described operands the enforced path never received:
+            # decide(prompt=...) was never scanned, recovery_cost never
+            # escalated, tool_fingerprint never bound, and delegation depth was
+            # unreachable because actor_chain stopped at the legacy body.
+            #
+            # prompt is sent as a DIGEST by default. The raw text is scanned
+            # server-side only when a workspace opts in, so zero-retention
+            # stays the default rather than something to remember.
+            "tool_fingerprint": str(
+                getattr(dc.context, "tool_fingerprint", "") or ""
+            ).strip(),
+            "recovery_cost": str(getattr(dc.context, "recovery_cost", "") or "").strip(),
+            "actor_chain": [
+                str(subject).strip() for subject in (dc.actor_chain or []) if str(subject).strip()
+            ],
+            "prompt_digest": _prompt_digest(getattr(dc, "prompt", "")),
         }
 
     @staticmethod
@@ -816,8 +854,15 @@ class AgenticEngine:
 
     @staticmethod
     def _route_not_implemented(resp: httpx.Response) -> bool:
-        """True only for statuses that identify an older route surface."""
-        return resp.status_code in (404, 405, 501)
+        """True only for statuses that identify an absent route surface.
+
+        410 is included because a deployment that has finished migrating off
+        the legacy PDP retires it with Gone rather than Not Found - and Gone is
+        the more definite of the two. Without it the fallback would raise a raw
+        transport error and re-probe a route the server has said is permanently
+        removed.
+        """
+        return resp.status_code in (404, 405, 410, 501)
 
     @staticmethod
     def _response_error_detail(resp: httpx.Response) -> str:
@@ -979,9 +1024,21 @@ class AgenticEngine:
         if info.provider_type == "generic_oidc":
             from .credentials.oidc import OIDCCredential
 
+            # The gateway stores only VERIFICATION config for a generic_oidc
+            # provider (issuer / audience / JWKS), matching how the UI is
+            # configured. The token endpoint and client id used to MINT the
+            # agent token live with the agent, so fall back to the SDK
+            # environment when credential-info does not supply them. The client
+            # secret is read from OIDC_CLIENT_SECRET by OIDCCredential itself.
             return OIDCCredential(
-                exchange_endpoint=info.exchange_endpoint,
-                client_id=info.blueprint_client_id,
+                exchange_endpoint=(
+                    info.exchange_endpoint
+                    or os.environ.get("OIDC_TOKEN_ENDPOINT", "")
+                ),
+                client_id=(
+                    info.blueprint_client_id
+                    or os.environ.get("OIDC_CLIENT_ID", "")
+                ),
                 gateway_audience=info.gateway_audience,
                 scopes=info.scopes,
             )
@@ -995,7 +1052,9 @@ class AgenticEngine:
             code="credential_provider_unsupported",
         )
 
-    def _headers(self, *, include_agent_token: bool) -> dict[str, str]:
+    def _headers(
+        self, *, include_agent_token: bool, method: str = "POST", path: str = ""
+    ) -> dict[str, str]:
         h = {
             "Authorization": f"Bearer {self.virtual_key}",
             "Content-Type": "application/json",
@@ -1007,7 +1066,29 @@ class AgenticEngine:
             token = self.agent_token(fail_closed=True)
             if token:
                 h["X-Agent-Token"] = token
+                # A proof of possession (RFC 9449) alongside the token, so a
+                # token the issuer BOUND to this process's key cannot be used by
+                # anyone who merely copies it. Sent whenever a proof can be
+                # produced: the gateway ignores one for an unbound token, and
+                # requires one for a bound token, so sending it unconditionally
+                # is what makes the transition invisible to the developer.
+                h.update(self._dpop_headers(method, path))
         return h
+
+    def _dpop_headers(self, method: str, path: str) -> dict[str, str]:
+        """Proof headers for one request, or {} when proofs are unavailable.
+
+        Never raises. A workload without the optional 'cryptography' dependency
+        keeps working as a plain bearer client exactly as before; if its token
+        IS bound, the gateway refuses it with a message naming the cause, which
+        is far more useful than an import error at startup.
+        """
+        try:
+            from .dpop import dpop_headers
+
+            return dpop_headers(method, f"{self.gateway_url.rstrip('/')}{path}")
+        except Exception:
+            return {}
 
 
 def _registry_key(value: str) -> str:

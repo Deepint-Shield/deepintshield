@@ -118,6 +118,13 @@ def test_governed_tool_is_blocked_by_agentic_new_before_legacy(shield_factory):
         "args_digest": sent["args_digest"],
         "execution_id": sent["execution_id"],
         "session_id": sent["session_id"],
+        # Operands that used to reach only the legacy PDP. They travel to the
+        # canonical one now, empty when the caller supplies nothing, so the
+        # SDK's documented decide(...) arguments and the enforced path agree.
+        "actor_chain": ["user:alice-corp-com"],
+        "prompt_digest": "",
+        "recovery_cost": "",
+        "tool_fingerprint": "",
     }
     assert sent["execution_id"] == sent["session_id"]
     assert sent["args_digest"].startswith("sha256:")
@@ -668,6 +675,10 @@ def test_explicit_gaf_resource_contract_overrides_safe_defaults(shield_factory):
         "args_digest": "<digest>",
         "execution_id": sent[0]["execution_id"],
         "session_id": sent[0]["session_id"],
+        "actor_chain": [],
+        "prompt_digest": "",
+        "recovery_cost": "",
+        "tool_fingerprint": "",
     }
     assert sent[0]["execution_id"] == sent[0]["session_id"]
 
