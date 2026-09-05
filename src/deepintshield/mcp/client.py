@@ -193,7 +193,7 @@ class MCPClient:
             "POST",
             "/v1/mcp/tool/execute",
             json_body=payload,
-            extra_headers=extra_headers,
+            extra_headers=self._agent_identity_headers(extra_headers),
             error_code=ErrorCode.MCP_EXECUTION_FAILED,
             require_object=True,
         )
@@ -258,6 +258,36 @@ class MCPClient:
             )
         return self.call(server=server, tool=tool, arguments=args_dict, **kwargs)
 
+    # ───────────────────────── agent identity headers ────────────────────────
+
+    def _agent_identity_headers(
+        self, extra_headers: Mapping[str, str] | None
+    ) -> dict[str, str]:
+        """Attach the client's agent selector to a gateway MCP call.
+
+        A DeepintShield client represents one agent identity. The PDP decide
+        path already sends ``X-Agent-Subject``; the brokered MCP path used to
+        send nothing, so a virtual key bound to more than one active agent was
+        refused with ``mcp_tool_authorization_unavailable`` on execute while
+        its decide calls succeeded. The selector is derived locally (no
+        discovery round-trip). Workload tokens stay request-scoped: pass
+        ``X-Agent-Token`` through ``extra_headers`` as before. Explicit caller
+        headers always win; nothing is added for a client without an
+        ``agent_name``.
+        """
+        headers = dict(extra_headers or {})
+        agent_name = str(getattr(self._shield, "agent_name", "") or "").strip()
+        if not agent_name:
+            return headers
+        if any(str(key).lower() == "x-agent-subject" for key in headers):
+            return headers
+        from ..agentic.registry import _registry_key
+
+        agent_key = _registry_key(agent_name)
+        if agent_key:
+            headers["X-Agent-Subject"] = f"agent:{agent_key}"
+        return headers
+
     # ─────────────────────────── discovery (optional) ────────────────────────
 
     def list_tools(
@@ -274,7 +304,7 @@ class MCPClient:
         unavailable in your environment, supply tool definitions manually.
         """
         self._warn_legacy("list_tools")
-        headers: dict[str, str] = {}
+        headers: dict[str, str] = self._agent_identity_headers(None)
         if admin_token:
             headers["Authorization"] = f"Bearer {admin_token}"
         payload = self._shield.request(

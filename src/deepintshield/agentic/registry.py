@@ -3358,6 +3358,23 @@ def ensure_registration_capture(
         if time.monotonic() < _capture_retry_at(engine, tool_key):
             return False
         selector = str(getattr(engine, "_agent_subject_selector", "") or "")
+        if not selector:
+            # No explicit agent_name was given. The gateway's own
+            # credential-info carries the subject this virtual key is bound to,
+            # and ``AgenticEngine.agent_subject`` documents that value as
+            # authoritative - it is already what /decide is told the principal
+            # is. Registering under it keeps one identity across the decision
+            # and the registry instead of refusing a VK that the server can
+            # name perfectly well.
+            #
+            # This is NOT the invented shared name warned about below: it is
+            # server-issued and VK-bound, so it cannot collide across keys.
+            try:
+                selector = str(getattr(engine, "agent_subject", "") or "").strip()
+            except Exception:
+                # Credential discovery is allowed to fail here; the selector
+                # check below then reports the missing name as before.
+                selector = ""
         agent_key = _key(selector.removeprefix("agent:"))
         if not selector.startswith("agent:") or not agent_key:
             # Proof-less registration is deliberately limited to an explicit

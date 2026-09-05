@@ -541,3 +541,37 @@ def test_framework_missing_dependency_and_binder_attribute_keep_builtin_types(
         "framework_dependency_missing"
     )
     assert missing_dependency.value.details == {"component": "autogen"}
+
+
+def test_mcp_call_sends_the_clients_agent_subject(shield_factory):
+    """The brokered MCP path carries the same agent selector as decide, so a
+    key bound to several active agents resolves to this client's agent."""
+    from deepintshield.agentic.registry import _registry_key
+
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["subject"] = request.headers.get("x-agent-subject")
+        return httpx.Response(200, json={"content": "done"})
+
+    shield = shield_factory(handler, agent_name="GISEC Demo Agent")
+    assert shield.mcp.call(server="server", tool="tool").text == "done"
+    assert captured["subject"] == f"agent:{_registry_key('GISEC Demo Agent')}"
+
+    # An explicit selector from the caller is never overridden.
+    shield.mcp.call(server="server", tool="tool", extra_headers={"X-Agent-Subject": "agent:other"})
+    assert captured["subject"] == "agent:other"
+
+
+def test_mcp_call_without_an_agent_name_adds_no_identity(shield_factory):
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["subject"] = request.headers.get("x-agent-subject")
+        captured["token"] = request.headers.get("x-agent-token")
+        return httpx.Response(200, json={"content": "done"})
+
+    shield = shield_factory(handler, agent_name="")
+    shield.mcp.call(server="server", tool="tool")
+    assert captured["subject"] is None
+    assert captured["token"] is None
