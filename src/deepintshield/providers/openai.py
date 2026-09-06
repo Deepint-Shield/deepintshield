@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, Any
 
 from .._prompt_cache import PROVIDER_OPENAI, build_http_client
 from ..errors import ErrorCode, _dependency_error
+from ..transport import connection_headers, _install_agent_selector_header_hook
 
 if TYPE_CHECKING:
     from ..client import DeepintShield
@@ -19,8 +20,8 @@ def build_client(shield: "DeepintShield", *, passthrough: bool = False, **kwargs
     on the gateway - if the workspace has it disabled the gateway strips the
     key before forwarding.
 
-    Callers passing their own ``http_client`` are respected (no hook is
-    attached); they're assumed to manage caching themselves.
+    Callers passing their own ``http_client`` manage caching themselves; only
+    case-insensitive agent selector override handling is added to that client.
     """
     try:
         from openai import OpenAI
@@ -35,11 +36,12 @@ def build_client(shield: "DeepintShield", *, passthrough: bool = False, **kwargs
     http_client = kwargs.pop("http_client", None)
     if http_client is None:
         http_client = build_http_client(PROVIDER_OPENAI, timeout=shield.timeout)
+    _install_agent_selector_header_hook(http_client)
 
     return OpenAI(
         base_url=kwargs.pop("base_url", base_url),
         api_key=kwargs.pop("api_key", shield.api_key()),
-        default_headers={**shield.headers(), **(kwargs.pop("default_headers", None) or {})},
+        default_headers=connection_headers(shield, extra=kwargs.pop("default_headers", None)),
         http_client=http_client,
         **kwargs,
     )

@@ -267,6 +267,17 @@ def install_all(*, client: Any = None) -> list[str]:
             with _install_lock:
                 if mod_name in _installed:
                     continue
+                # Nested imports return before the enclosing framework has
+                # defined its execution classes. Inspecting it at that point
+                # causes circular imports and falsely reports an unsupported
+                # version. The enclosing import's post-hook retries once all
+                # framework modules have finished initializing.
+                if any(
+                    (name == mod_name or name.startswith(mod_name + "."))
+                    and getattr(getattr(module, "__spec__", None), "_initializing", False)
+                    for name, module in tuple(sys.modules.items())
+                ):
+                    continue
                 # Keep check → patch → mark atomic. Two clients initialized in
                 # parallel must not wrap the same framework method twice and
                 # therefore run two PDP decisions for one tool invocation.

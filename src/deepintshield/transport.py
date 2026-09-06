@@ -22,6 +22,41 @@ if TYPE_CHECKING:
     from .client import DeepintShield
 
 
+def _merge_headers(*sources: Mapping[str, str]) -> dict[str, str]:
+    """HTTP field names are case-insensitive; the last source wins."""
+    result: dict[str, str] = {}
+    names: dict[str, str] = {}
+    for source in sources:
+        for name, value in source.items():
+            previous = names.get(name.lower())
+            if previous is not None:
+                result.pop(previous)
+            result[name] = value
+            names[name.lower()] = name
+    return result
+
+
+def _normalize_agent_selector_headers(request: httpx.Request) -> None:
+    # Native SDKs merge default/extra headers as case-sensitive dictionaries.
+    # HTTPX retains both spellings, so select the final explicit override before
+    # sending rather than emitting two contradictory profile selectors.
+    for name in ("x-deepintshield-agent", "x-agent-subject"):
+        values = request.headers.get_list(name)
+        if len(values) > 1:
+            request.headers[name] = values[-1]
+
+
+async def _normalize_agent_selector_headers_async(request: httpx.Request) -> None:
+    _normalize_agent_selector_headers(request)
+
+
+def _install_agent_selector_header_hook(client: httpx.Client | httpx.AsyncClient) -> None:
+    hook = _normalize_agent_selector_headers_async if isinstance(client, httpx.AsyncClient) else _normalize_agent_selector_headers
+    hooks = client.event_hooks.setdefault("request", [])
+    if hook not in hooks:
+        hooks.append(hook)
+
+
 def connection_headers(
     shield: "DeepintShield",
     *,
@@ -35,21 +70,21 @@ def connection_headers(
     ``identity=True`` triggers lazy agentic discovery (one network call) the
     first time; it defaults off so chat traffic never blocks on it.
     """
-    h = dict(shield.headers())  # content-type + x-deepintshield-vk + default_headers
-    h.setdefault("x-deepintshield-app", shield.app_name)
+    defaults = {"x-deepintshield-app": shield.app_name}
     # Omitted rather than sent empty when unset: an empty selector is not an
     # identity, and sending one would have the gateway resolve "the agent this
     # key happens to be bound to" instead of the one the caller meant.
     if str(getattr(shield, "agent_name", "") or "").strip():
-        h.setdefault("x-deepintshield-agent", shield.agent_name)
-    h.setdefault("x-deepintshield-requester", shield.requester)
-    h.setdefault("x-deepintshield-requester-role", shield.requester_role)
+        defaults["x-deepintshield-agent"] = shield.agent_name
+    defaults["x-deepintshield-requester"] = shield.requester
+    defaults["x-deepintshield-requester-role"] = shield.requester_role
+    h = _merge_headers(defaults, shield.headers())
     if identity:
         token = shield._agent_token()
         if token:
-            h["X-Agent-Token"] = token
+            h = _merge_headers(h, {"X-Agent-Token": token})
     if extra:
-        h.update(dict(extra))
+        h = _merge_headers(h, extra)
     return h
 
 

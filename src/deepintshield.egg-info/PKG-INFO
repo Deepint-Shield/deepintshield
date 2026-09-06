@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: deepintshield
-Version: 2.7.0
+Version: 2.7.1
 Summary: Unified Python SDK for routing chat, RAG, agentic tool-gating, identity, and MCP traffic through DeepintShield - drop-in across the top agentic frameworks.
 Author: DeepintShield
 License-Expression: Apache-2.0

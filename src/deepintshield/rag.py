@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import functools
+from copy import deepcopy
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping
 
 from .errors import ErrorCode, _annotate_error
@@ -27,16 +29,68 @@ def build_chunk(content: str, chunk_id: str, document_id: str, **kwargs: Any) ->
     return RetrievedChunk(chunk_id=chunk_id, document_id=document_id, content=content, **kwargs)
 
 
+def _allowed_chunk_records(response: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
+    result = response.get("result", response)
+    if not isinstance(result, Mapping):
+        return {}
+    trace = result.get("trace")
+    if not isinstance(trace, Mapping):
+        return {}
+    decision = str(result.get("final_action") or trace.get("decision") or "").lower().strip()
+    if decision and decision not in {"allow", "redact", "allow_with_redaction", "monitor"}:
+        return {}
+    retrieved = trace.get("retrieved_chunks")
+    if not isinstance(retrieved, (list, tuple)):
+        return {}
+    records: dict[str, Mapping[str, Any]] = {}
+    seen: set[str] = set()
+    for record in retrieved:
+        if not isinstance(record, Mapping):
+            continue
+        chunk_id = str(record.get("chunk_id") or "").strip()
+        if not chunk_id:
+            continue
+        if chunk_id in seen:
+            # A repeated ID cannot reliably bind the verdict to one chunk.
+            records.pop(chunk_id, None)
+            continue
+        seen.add(chunk_id)
+        chunk_decision = str(record.get("decision") or "allow").lower().strip()
+        if chunk_decision not in {"allow", "redact", "allow_with_redaction"}:
+            continue
+        if chunk_decision in {"redact", "allow_with_redaction"} and not isinstance(record.get("sanitized_content"), str):
+            # Older gateways may only expose a shortened preview. It must
+            # never be replaced with the original, unredacted document.
+            continue
+        records[chunk_id] = record
+    return records
+
+
 def allowed_chunk_ids(response: Mapping[str, Any]) -> set[str]:
-    result = response.get("result", {}) or {}
-    trace = result.get("trace", {}) or {}
-    retrieved = trace.get("retrieved_chunks", []) or []
-    return {str(c.get("chunk_id", "")).strip() for c in retrieved if str(c.get("chunk_id", "")).strip()}
+    return set(_allowed_chunk_records(response))
 
 
 def filter_chunks(chunks: Iterable[RetrievedChunk], response: Mapping[str, Any]) -> list[RetrievedChunk]:
-    allowed = allowed_chunk_ids(response)
-    return [chunk for chunk in chunks if chunk.chunk_id in allowed]
+    records = _allowed_chunk_records(response)
+    chunk_list = list(chunks)
+    seen: set[str] = set()
+    duplicate_ids: set[str] = set()
+    for chunk in chunk_list:
+        if chunk.chunk_id in seen:
+            duplicate_ids.add(chunk.chunk_id)
+        seen.add(chunk.chunk_id)
+    allowed: list[RetrievedChunk] = []
+    for chunk in chunk_list:
+        record = records.get(chunk.chunk_id)
+        if record is None or chunk.chunk_id in duplicate_ids:
+            continue
+        document_id = record.get("document_id")
+        if document_id and document_id != chunk.document_id:
+            continue
+        sanitized = record.get("sanitized_content")
+        redacted = str(record.get("decision") or "").lower().strip() in {"redact", "allow_with_redaction"}
+        allowed.append(replace(chunk, content=sanitized) if redacted else chunk)
+    return allowed
 
 
 class RAGSurface:
@@ -117,8 +171,8 @@ class RAGSurface:
         retrievers, or a custom callable object). Mutates the retriever in
         place and returns it, so existing graph/chain wiring is unchanged.
 
-        Unauthorised chunks (per the gateway verdict) are dropped from the
-        returned list; the order of allowed chunks is preserved.
+        Unauthorised chunks are dropped and redacted documents are copied
+        with sanitized content. Source documents and allowed order are preserved.
         """
         method_name = next(
             (m for m in _RETRIEVE_METHODS if callable(getattr(retriever, m, None))), None
@@ -167,7 +221,6 @@ class RAGSurface:
         chunk_mapper: Callable[[int, Any], RetrievedChunk] | None,
         **eval_kwargs: Any,
     ) -> list[Any]:
-        chunk_ids: list[str] = []
         chunks: list[RetrievedChunk] = []
         for i, doc in enumerate(docs):
             if chunk_mapper is not None:
@@ -183,13 +236,34 @@ class RAGSurface:
                     chunk_id=cid,
                     document_id=str(meta.get(doc_id_key) or ""),
                 )
-            chunk_ids.append(chunk.chunk_id)
             chunks.append(chunk)
         allowed, _resp = self.filter(
             query=query, chunks=chunks, source_id=source_id, **eval_kwargs
         )
-        allowed_ids = {c.chunk_id for c in allowed}
-        return [doc for doc, cid in zip(docs, chunk_ids) if cid in allowed_ids]
+        allowed_by_id = {c.chunk_id: c for c in allowed}
+        filtered_docs: list[Any] = []
+        for doc, original_chunk in zip(docs, chunks):
+            allowed_chunk = allowed_by_id.get(original_chunk.chunk_id)
+            if allowed_chunk is None:
+                continue
+            if allowed_chunk.content == original_chunk.content:
+                filtered_docs.append(doc)
+                continue
+            target_attr = content_attr if hasattr(doc, content_attr) else "text"
+            if not hasattr(doc, target_attr):
+                raise _annotate_error(
+                    TypeError("guard_retriever: cannot apply sanitized content to this document"),
+                    ErrorCode.RAG_RETRIEVER_UNSUPPORTED,
+                )
+            # Some framework documents expose text through a nested resource.
+            # A shallow copy would redact the retriever's cached source too.
+            sanitized_doc = deepcopy(doc)
+            try:
+                setattr(sanitized_doc, target_attr, allowed_chunk.content)
+            except (AttributeError, TypeError, ValueError):
+                object.__setattr__(sanitized_doc, target_attr, allowed_chunk.content)
+            filtered_docs.append(sanitized_doc)
+        return filtered_docs
 
     # ── embedding-input guard (Portkey-parity "before request" stage) ─────────
 
