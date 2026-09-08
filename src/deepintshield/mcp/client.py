@@ -41,6 +41,7 @@ class MCPClient:
 
     def __init__(self, shield: "DeepintShield") -> None:
         self._shield = shield
+        self._anthropic_tool_names: dict[str, str] = {}
 
     # ───────────────────── preferred native MCP boundary ───────────────────
 
@@ -368,7 +369,7 @@ class MCPClient:
         """Convert tools to Anthropic Messages API ``tools=`` array shape."""
         self._warn_legacy("to_anthropic")
         from .adapters import anthropic as _anthropic
-        return _anthropic.to_anthropic(tools)
+        return _anthropic.to_anthropic(tools, name_map=self._anthropic_tool_names)
 
     def run_anthropic_tool_uses(
         self,
@@ -386,6 +387,7 @@ class MCPClient:
             self,
             content,
             extra_headers=extra_headers,
+            name_map=self._anthropic_tool_names,
         )
 
     def to_langchain(self, tools: Iterable[Tool]) -> list[Any]:

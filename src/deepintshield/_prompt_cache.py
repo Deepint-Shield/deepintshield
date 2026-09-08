@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from functools import lru_cache
 from typing import Any, Callable, Iterable
 
 import httpx
@@ -32,6 +33,20 @@ import httpx
 
 PROVIDER_ANTHROPIC = "anthropic"
 PROVIDER_OPENAI = "openai"
+
+
+@lru_cache(maxsize=8)
+def _request_byte_stream_type(request_type: type) -> type:
+    """Keep rewritten request streams in the HTTP library that owns the request."""
+    for cls in request_type.__mro__:
+        package = cls.__module__.partition(".")[0]
+        if package == "httpx2":
+            # Optional: only imported for a request from an installed httpx2 SDK.
+            from httpx2 import ByteStream
+            return ByteStream
+        if package == "httpx":
+            return httpx.ByteStream
+    return httpx.ByteStream
 
 # Anthropic accepts up to 4 cache_control markers per request. We place them in
 # priority order: system → tools → last static user/assistant block.
@@ -209,13 +224,7 @@ def build_request_hook(
         # the announced byte count). Reattach the stream so the new body
         # is what actually gets sent.
         request._content = encoded  # type: ignore[attr-defined]
-        try:
-            from httpx._content import ByteStream  # type: ignore
-        except ImportError:  # httpx <0.24 fallback - module path drifted.
-            from httpx import _content  # type: ignore
-            ByteStream = getattr(_content, "ByteStream", None)
-        if ByteStream is not None:
-            request.stream = ByteStream(encoded)  # type: ignore[attr-defined]
+        request.stream = _request_byte_stream_type(type(request))(encoded)
 
     return hook
 

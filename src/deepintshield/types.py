@@ -74,12 +74,16 @@ class GuardrailResult:
 
     @classmethod
     def from_response(cls, stage: str, payload: dict[str, Any]) -> "GuardrailResult":
-        inner = payload.get("result") or payload
+        inner = payload.get("result", payload)
+        if not isinstance(inner, dict):
+            raise ValueError("The gateway returned an invalid guardrail result")
         decision = inner.get("decision")
         if isinstance(decision, dict):
             decision = decision.get("decision", "")
+        if not isinstance(decision, str) or not decision.strip():
+            raise ValueError("The gateway returned no guardrail decision")
         return cls(
-            decision=(decision or "allow").strip().lower(),
+            decision=decision.strip().lower(),
             stage=stage,
             reason=(inner.get("reason") or "").strip(),
             raw=payload,

@@ -43,8 +43,9 @@ def enforce_deepintshield_exception(_context, error):
 
 
 async def main() -> None:
-    model_client = shield.bind("openai_agents").apply()
+    model_client = None
     try:
+        model_client = shield.bind("openai_agents").apply()
         url, headers = shield.mcp.connection()
         async with MCPServerStreamableHttp(
             name="DeepIntShield",
@@ -74,8 +75,11 @@ async def main() -> None:
         else:
             print(f"DeepIntShield error [{exc.code}]: {exc.description}")
     finally:
-        await model_client.close()
-        shield.close()
+        try:
+            if model_client is not None:
+                await model_client.close()
+        finally:
+            shield.close()
 
 
 if __name__ == "__main__":

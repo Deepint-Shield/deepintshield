@@ -1,3 +1,5 @@
+import os
+
 from deepintshield import DeepintShield
 
 
@@ -5,7 +7,7 @@ shield = DeepintShield.from_env()
 anthropic = shield.anthropic(passthrough=True)
 
 response = anthropic.messages.create(
-    model="claude-3-sonnet-20240229",
+    model=os.getenv("DEEPINTSHIELD_ANTHROPIC_MODEL", "claude-sonnet-4-6"),
     max_tokens=256,
     messages=[{"role": "user", "content": "Hello from Anthropic passthrough."}],
 )

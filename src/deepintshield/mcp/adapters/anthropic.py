@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+import hashlib
 from typing import TYPE_CHECKING, Any, Iterable, Mapping
 
 from ..tool import Tool
@@ -15,11 +16,23 @@ if TYPE_CHECKING:
 _ANTHROPIC_NAME_RE = re.compile(r"[^a-zA-Z0-9_-]")
 
 
-def to_anthropic(tools: Iterable[Tool]) -> list[dict[str, Any]]:
+def to_anthropic(
+    tools: Iterable[Tool], *, name_map: dict[str, str] | None = None,
+) -> list[dict[str, Any]]:
     """Convert ``Tool`` objects to Anthropic's Messages API tools array."""
     out: list[dict[str, Any]] = []
+    aliases = dict(name_map or {})
     for tool in tools:
-        sanitized = _ANTHROPIC_NAME_RE.sub("_", tool.qualified_name)[:64]
+        qualified = tool.qualified_name
+        sanitized = _ANTHROPIC_NAME_RE.sub("_", qualified)
+        if sanitized != qualified or len(sanitized) > 64:
+            # Truncation/replacement alone can send two different tools to
+            # the same server name. Keep a stable, provider-valid alias.
+            digest = hashlib.sha256(qualified.encode("utf-8")).hexdigest()[:16]
+            sanitized = f"{sanitized[:47]}_{digest}"
+        if sanitized in aliases and aliases[sanitized] != qualified:
+            raise ValueError("Anthropic MCP tool aliases collide")
+        aliases[sanitized] = qualified
         out.append(
             {
                 "name": sanitized,
@@ -27,6 +40,8 @@ def to_anthropic(tools: Iterable[Tool]) -> list[dict[str, Any]]:
                 "input_schema": tool.schema or {"type": "object", "properties": {}},
             }
         )
+    if name_map is not None:
+        name_map.update(aliases)
     return out
 
 
@@ -35,6 +50,7 @@ def run_tool_uses(
     content: Iterable[Any],
     *,
     extra_headers: Mapping[str, str] | None = None,
+    name_map: Mapping[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     """Execute every ``tool_use`` block in an assistant content array.
 
@@ -50,7 +66,7 @@ def run_tool_uses(
             continue
         try:
             result = client.call_qualified(
-                name,
+                (name_map or {}).get(name, name),
                 args or {},
                 call_id=tool_use_id,
                 extra_headers=extra_headers,

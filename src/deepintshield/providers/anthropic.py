@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from .._prompt_cache import PROVIDER_ANTHROPIC, build_http_client
+from .._prompt_cache import PROVIDER_ANTHROPIC, build_request_hook
 from ..errors import ErrorCode, _dependency_error
 from ..transport import connection_headers, _install_agent_selector_header_hook
 
@@ -34,14 +34,28 @@ def build_client(shield: "DeepintShield", *, passthrough: bool = False, **kwargs
 
     base_url = shield.anthropic_passthrough_base_url() if passthrough else shield.anthropic_base_url()
     http_client = kwargs.pop("http_client", None)
+    owns_http_client = http_client is None
     if http_client is None:
-        http_client = build_http_client(PROVIDER_ANTHROPIC, timeout=shield.timeout)
-    _install_agent_selector_header_hook(http_client)
+        # Use the installed SDK's public transport class: older releases use
+        # httpx, while current releases require httpx2 and reject httpx.Client.
+        http_client = anthropic.DefaultHttpxClient(
+            timeout=shield.timeout,
+            follow_redirects=False,
+            event_hooks={"request": [build_request_hook(PROVIDER_ANTHROPIC)]},
+        )
 
-    return anthropic.Anthropic(
-        base_url=kwargs.pop("base_url", base_url),
-        api_key=kwargs.pop("api_key", shield.api_key()),
-        default_headers=connection_headers(shield, extra=kwargs.pop("default_headers", None)),
-        http_client=http_client,
-        **kwargs,
-    )
+    try:
+        client = anthropic.Anthropic(
+            base_url=kwargs.pop("base_url", base_url),
+            api_key=kwargs.pop("api_key", shield.api_key()),
+            default_headers=connection_headers(shield, extra=kwargs.pop("default_headers", None)),
+            http_client=http_client,
+            **kwargs,
+        )
+    except Exception:
+        if owns_http_client:
+            http_client.close()
+        raise
+    # Let the SDK validate caller-supplied transports before mutating hooks.
+    _install_agent_selector_header_hook(http_client)
+    return client

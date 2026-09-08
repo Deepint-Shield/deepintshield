@@ -5,6 +5,8 @@
 
 Unified Python SDK for DeepIntShield - one import, any provider, any agent framework.
 
+Current release: **2.7.2**, aligned with DeepIntShield Server **2.7.2**.
+
 `deepintshield` lets you keep writing idiomatic OpenAI / Anthropic / Bedrock /
 Google GenAI code **and** native agent-framework code (LangGraph, CrewAI,
 OpenAI Agents SDK, LlamaIndex, AutoGen, PydanticAI, Temporal, AWS Strands,
@@ -40,6 +42,9 @@ and you're done.
 ---
 
 ## Install
+
+For a reproducible installation of this release, use `pip install "deepintshield==2.7.2"`.
+Add the provider and framework extras your application needs:
 
 ```bash
 pip install deepintshield                       # core (chat, RAG, agentic)
@@ -175,16 +180,39 @@ response = openai.chat.completions.create(
 )
 ```
 
+The same client exposes the native Responses API:
+
+```python
+response = openai.responses.create(
+    model="gpt-4o-mini",
+    input="Explain this design in one sentence.",
+    store=False,
+)
+print(response.output_text)
+```
+
+Responses uses `max_output_tokens` and a `reasoning` object where supported;
+Chat Completions uses its model's supported token-limit field and
+`reasoning_effort`. For manual Responses continuations, retain the full output
+items, including tool calls and opaque reasoning state, and replay them only
+with the same provider and model. The Playground performs this mapping and
+preserves compatible response state in saved sessions.
+
 ### Anthropic
 
 ```python
 anthropic = shield.anthropic()
 response = anthropic.messages.create(
-    model="claude-3-sonnet-20240229",
+    model="claude-sonnet-5",
     max_tokens=256,
     messages=[{"role": "user", "content": "hello"}],
 )
 ```
+
+`shield.anthropic()` uses the installed Anthropic SDK's default transport class,
+including SDK releases backed by `httpx2`, and retains automatic prompt-cache
+hooks. A caller-supplied `http_client` must be compatible with that installed SDK
+and remains responsible for its own prompt-cache hooks.
 
 ### Bedrock
 
@@ -201,10 +229,29 @@ response = bedrock.converse(
 ```python
 genai = shield.genai()
 response = genai.models.generate_content(
-    model="gemini-1.5-flash",
+    model="gemini-3.5-flash",
     contents="hello",
+    config={"automatic_function_calling": {"disable": True}},
 )
+print(response.text)
 ```
+
+Disabling automatic function calling (AFC) is optional for this text-only call.
+Recent Google SDK versions warn about direct AFC use even when no callable tools
+are supplied; that warning alone does not mean the request failed. When using
+Python callable tools, Google recommends the chat interface. Multi-turn tool
+workflows also depend on the gateway preserving tool roles and thought signatures;
+a successful text-only request does not verify those conversions.
+
+The gateway's native Gemini conversion preserves model/user tool roles, per-call
+thought signatures, and distinct IDs for parallel calls to the same function.
+SDK regression tests cover direct and chat calls, sync/async streaming, and
+callable-tool continuations. A timeout-only `http_options` override retains the
+gateway destination in SDK 2.7.2 (fixed in 2.7.1); SDK 2.7.0 does not merge that override correctly.
+
+For streaming, use `genai.models.generate_content_stream(...)` or
+`chat.send_message_stream(...)` and read each chunk's `text`. The native async
+interfaces remain available under `genai.aio`.
 
 ### LangChain
 
@@ -276,6 +323,12 @@ your retriever can't do itself:
 retriever = shield.rag.guard_retriever(my_retriever)   # mutates in place
 docs = retriever.invoke("what is the Q2 ledger?")        # only allowed chunks
 ```
+
+Async retrievers are supported too: use `await retriever.ainvoke(query)` or
+the retriever's native async retrieval method. Filtering finishes before
+documents are returned; delegated retrieval methods filter once per call.
+Allowed documents keep their order and original framework objects. Redacted
+content is returned in copies, leaving the retriever's source documents intact.
 
 ### Guard an embedder (pre-embedding, Portkey-parity "before request")
 
@@ -715,15 +768,21 @@ OpenAI/Anthropic/LangChain conversion-loop helpers remain deprecated 2.x
 compatibility shims. Their removal is planned for SDK 3.0; new code should use
 the official session or a maintained third-party adapter.
 
+For an existing Anthropic conversion loop, use the same `shield.mcp` instance
+for `to_anthropic(tools)` and `run_anthropic_tool_uses(response.content)`.
+Provider-safe aliases distinguish qualified names that contain unsupported
+characters or exceed Anthropic's length limit; that client retains the mapping
+back to the original tool names for execution.
+
 ---
 
 ## Cost Optimization
 
-The SDK automatically participates in the gateway's two cost-reduction layers
+The SDK participates in the gateway's caching mechanisms
 (both controlled by workspace switches under **Cost Optimization**):
 
-- **Provider prompt caching** - every chat client returned by `shield.openai()`,
-  `shield.anthropic()`, etc. ships an `httpx` request hook that injects
+- **Provider prompt caching** - SDK-created OpenAI and Anthropic transports
+  include request hooks that inject
   Anthropic `cache_control` markers and an OpenAI `prompt_cache_key` so the
   provider reuses KV state for the static prompt prefix. Eligible cached tokens
   use the provider's current cached-input rate; verify model-specific pricing
@@ -736,6 +795,11 @@ The SDK automatically participates in the gateway's two cost-reduction layers
   embeddings match a previous response within the configured similarity
   threshold. The SDK doesn't need any code change to benefit; results flow
   back through the normal API.
+
+Cost dashboards show recorded numeric totals, using `$0.00` when no display
+value is available. Missing prices remain nullable in API log records and can
+still be found through the missing-cost filter. Estimated savings remain signed
+and are separate from the actual recorded cost.
 
 ### Per-request cache overrides
 

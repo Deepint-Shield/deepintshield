@@ -7,7 +7,7 @@ shield = DeepintShield.from_env()
 genai = shield.genai()
 
 response = genai.models.generate_content(
-    model=os.getenv("DEEPINTSHIELD_GENAI_MODEL", "gemini-1.5-flash"),
+    model=os.getenv("DEEPINTSHIELD_GENAI_MODEL", "gemini-2.5-flash"),
     contents="Say hello from Google GenAI via DeepintShield.",
 )
 

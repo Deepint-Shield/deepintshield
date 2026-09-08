@@ -31,7 +31,7 @@ allowed, _ = shield.rag.filter(query=query, chunks=chunks, source_id=os.getenv("
 context = "\n\n".join(c.content for c in allowed)
 
 response = anthropic.messages.create(
-    model=os.getenv("DEEPINTSHIELD_ANTHROPIC_MODEL", "claude-3-sonnet-20240229"),
+    model=os.getenv("DEEPINTSHIELD_ANTHROPIC_MODEL", "claude-sonnet-4-6"),
     max_tokens=256,
     messages=[{"role": "user", "content": f"Context:\n{context}\n\nQuestion: {query}"}],
 )

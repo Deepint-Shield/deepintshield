@@ -14,7 +14,7 @@ from deepintshield import DeepintShield, DeepintShieldError
 
 
 shield = DeepintShield.from_env()
-model = os.getenv("DEEPINTSHIELD_ANTHROPIC_MODEL", "claude-3-5-sonnet-latest")
+model = os.getenv("DEEPINTSHIELD_ANTHROPIC_MODEL", "claude-sonnet-4-6")
 
 
 async def main() -> None:
@@ -88,6 +88,8 @@ async def main() -> None:
             print("MCP authorization is temporarily unavailable.")
         else:
             print(f"DeepIntShield error [{exc.code}]: {exc.description}")
+    finally:
+        shield.close()
 
 
 if __name__ == "__main__":

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import functools
+import inspect
+from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Mapping
@@ -13,6 +16,7 @@ if TYPE_CHECKING:
 
 # Retrieve-style methods we know how to wrap, in priority order.
 _RETRIEVE_METHODS = ("invoke", "retrieve", "_get_relevant_documents", "get_relevant_documents")
+_ASYNC_RETRIEVE_METHODS = ("ainvoke", "aretrieve", "_aget_relevant_documents", "aget_relevant_documents")
 
 
 def _query_text(query: Any) -> str:
@@ -166,33 +170,31 @@ class RAGSurface:
         """Wrap a framework retriever so every retrieved chunk is filtered
         through the gateway's RAG-security evaluate before it reaches the LLM.
 
-        Works with any retriever exposing one of ``invoke`` / ``retrieve`` /
-        ``_get_relevant_documents`` (LangChain ``BaseRetriever``, LlamaIndex
+        Works with retrievers exposing ``invoke`` / ``retrieve`` /
+        ``_get_relevant_documents`` or their async counterparts (LangChain ``BaseRetriever``, LlamaIndex
         retrievers, or a custom callable object). Mutates the retriever in
         place and returns it, so existing graph/chain wiring is unchanged.
 
         Unauthorised chunks are dropped and redacted documents are copied
         with sanitized content. Source documents and allowed order are preserved.
         """
-        method_name = next(
-            (m for m in _RETRIEVE_METHODS if callable(getattr(retriever, m, None))), None
-        )
-        if method_name is None:
+        method_names = [m for m in (*_RETRIEVE_METHODS, *_ASYNC_RETRIEVE_METHODS)
+                        if callable(getattr(retriever, m, None))]
+        if not method_names:
             raise _annotate_error(
                 TypeError(
                     "guard_retriever: retriever exposes no known retrieve method "
-                    f"({', '.join(_RETRIEVE_METHODS)})"
+                    f"({', '.join((*_RETRIEVE_METHODS, *_ASYNC_RETRIEVE_METHODS))})"
                 ),
                 ErrorCode.RAG_RETRIEVER_UNSUPPORTED,
             )
-        original = getattr(retriever, method_name)
-        if getattr(original, "_deepintshield_wrapped", False):
-            return retriever
         surface = self
+        # Framework entry points often delegate to one another, including
+        # ainvoke -> a worker thread -> invoke. Filter once at the outer call;
+        # independent async tasks must retain their own evaluation context.
+        retrieving: ContextVar[bool] = ContextVar("deepintshield_retrieving", default=False)
 
-        @functools.wraps(original)
-        def wrapped(query: Any, *args: Any, **kwargs: Any) -> Any:
-            docs = original(query, *args, **kwargs)
+        def filter_result(query: Any, docs: Any) -> Any:
             if not isinstance(docs, (list, tuple)) or not docs:
                 return docs
             return surface._filter_documents(
@@ -202,11 +204,54 @@ class RAGSurface:
                 **eval_kwargs,
             )
 
-        wrapped._deepintshield_wrapped = True  # type: ignore[attr-defined]
-        try:
-            setattr(retriever, method_name, wrapped)
-        except Exception:  # frozen pydantic model
-            object.__setattr__(retriever, method_name, wrapped)
+        def wrap(original: Callable[..., Any], asynchronous: bool) -> Callable[..., Any]:
+            @functools.wraps(original)
+            async def async_wrapped(query: Any, *args: Any, **kwargs: Any) -> Any:
+                nested = retrieving.get()
+                token = retrieving.set(True)
+                try:
+                    docs = original(query, *args, **kwargs)
+                    if inspect.isawaitable(docs):
+                        docs = await docs
+                finally:
+                    retrieving.reset(token)
+                if nested:
+                    return docs
+                return await asyncio.to_thread(filter_result, query, docs)
+
+            @functools.wraps(original)
+            def sync_wrapped(query: Any, *args: Any, **kwargs: Any) -> Any:
+                if retrieving.get():
+                    return original(query, *args, **kwargs)
+                token = retrieving.set(True)
+                try:
+                    docs = original(query, *args, **kwargs)
+                finally:
+                    retrieving.reset(token)
+                if inspect.isawaitable(docs):
+                    async def complete() -> Any:
+                        token = retrieving.set(True)
+                        try:
+                            resolved = await docs
+                        finally:
+                            retrieving.reset(token)
+                        return await asyncio.to_thread(filter_result, query, resolved)
+                    return complete()
+                return filter_result(query, docs)
+
+            wrapped = async_wrapped if asynchronous else sync_wrapped
+            wrapped._deepintshield_wrapped = True  # type: ignore[attr-defined]
+            return wrapped
+
+        for method_name in method_names:
+            original = getattr(retriever, method_name)
+            if getattr(original, "_deepintshield_wrapped", False):
+                continue
+            wrapped = wrap(original, inspect.iscoroutinefunction(original) or method_name in _ASYNC_RETRIEVE_METHODS)
+            try:
+                setattr(retriever, method_name, wrapped)
+            except Exception:  # frozen pydantic model
+                object.__setattr__(retriever, method_name, wrapped)
         return retriever
 
     def _filter_documents(

@@ -3,6 +3,10 @@
 
 # deepintshield - examples
 
+These examples target SDK **2.7.2** and DeepIntShield Server **2.7.2**.
+Install the matching release with `pip install "deepintshield==2.7.2"`
+and add the extras required by your example.
+
 Every example is runnable and uses the real provider/framework SDK. Constructing
 `DeepintShield` automatically arms supported agent frameworks; a binder is only
 needed when model traffic must also be routed through the gateway. Set your VK
@@ -29,6 +33,12 @@ python examples/crewai/transparent.py
 
 Install the matching extra per example, e.g. `pip install 'deepintshield[crewai]'`.
 
+Select model IDs enabled for your gateway and provider keys. Provider examples
+accept `DEEPINTSHIELD_ANTHROPIC_MODEL` (default `claude-sonnet-4-6`) and
+`DEEPINTSHIELD_GENAI_MODEL` (default `gemini-2.5-flash`), including their
+passthrough examples. Override these values when your configured catalog or
+provider access differs; a sample default does not grant access to a model.
+
 For a new `DEEPINTSHIELD_AGENT_NAME`, a successful first native execution
 capture raises a marked `RuntimeError` with code `agent_registration_pending`
 and trusted summary/action fields. Raw gateway detail is never rendered.
@@ -52,7 +62,7 @@ explanation; examples do not catch normal governance outcomes to reformat them.
 | `transparent/connection.py` | Point any OpenAI-compatible client at the gateway via `shield.connection()` |
 | `transparent/create_headers.py` | Portkey-style `shield.create_headers()` injector |
 | `transparent/universal_openai.py` | Raw-HTTP pattern (n8n / Flowise / Dify / any platform) |
-| `rag/guard_retriever.py` | Post-retrieval chunk filtering (ACL / provenance / injection) |
+| `rag/guard_retriever.py` | Synchronous and asynchronous post-retrieval filtering (ACL / provenance / injection), once per retrieval |
 | `rag/guard_embedder.py` | Pre-embedding input screening (PII / injection) |
 
 ## Per provider - chat & RAG (transparent model traffic)
@@ -106,8 +116,21 @@ applications, but new code does not attach anything per worker or agent.
 
 ## MCP
 
-`openai/mcp.py`, `anthropic/mcp.py`, `langchain/mcp.py` - the same `Tool` /
-`MCPClient` API drives any MCP server connected to your gateway.
+| Example | Install extra | Integration |
+| --- | --- | --- |
+| `openai/mcp.py` | `deepintshield[openai-agents]` | OpenAI Agents owns its MCP session and agent loop; result/error callbacks preserve coded authorization failures. |
+| `anthropic/mcp.py` | `deepintshield[anthropic-mcp]` | `shield.mcp.connect()` opens an official MCP session; Anthropic's helper converts tools and explicit dispatch preserves exceptions. |
+| `langchain/mcp.py` | `deepintshield[langchain-mcp]` | The maintained LangChain adapter uses `shield.mcp.connection()` and an interceptor for governed tool errors. |
+
+These samples use native MCP/framework types. Configure an MCP server and the
+calling key's permissions before running; the model-loop samples expect the
+DeepWiki tool mentioned in their prompt. Discovery permission does not imply
+execution permission. The samples close their owned clients on exit.
+
+For delegated calls, pass the request-scoped subject token in `extra_headers`
+to `connect()` or `connection()` and create a separate session for each caller.
+Keep credentials in transport headers. New applications should use these
+native paths instead of the deprecated 2.x `Tool` conversion helpers.
 
 ---
 

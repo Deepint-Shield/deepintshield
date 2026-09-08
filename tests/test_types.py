@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from deepintshield import (
     GuardrailResult,
     NON_BLOCKING_DECISIONS,
@@ -66,9 +68,10 @@ def test_guardrail_result_from_response_handles_dict_decision():
     assert result.decision == "allow"
 
 
-def test_guardrail_result_from_response_defaults_allow_when_missing():
-    result = GuardrailResult.from_response("input", {})
-    assert result.decision == "allow"
+@pytest.mark.parametrize("payload", [{}, {"result": {}}, {"result": None}, {"result": []}, {"decision": ""}, {"decision": 1}])
+def test_guardrail_result_rejects_missing_or_malformed_decision(payload):
+    with pytest.raises(ValueError, match="guardrail"):
+        GuardrailResult.from_response("input", payload)
 
 
 def test_guardrail_result_mode_defaults_empty_and_is_captured():

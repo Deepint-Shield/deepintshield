@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "deepintshield"
-version = "2.7.1"
+version = "2.7.2"
 description = "Unified Python SDK for routing chat, RAG, agentic tool-gating, identity, and MCP traffic through DeepintShield - drop-in across the top agentic frameworks."
 readme = "README.md"
 requires-python = ">=3.10"

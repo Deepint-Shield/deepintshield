@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import json
+import importlib
 
 import httpx
 import pytest
 
 
-def _native_response(provider: str, stream: bool) -> httpx.Response:
+def _native_response(provider: str, stream: bool, http=httpx):
     if provider == "openai":
         body = {"id": "reply", "object": "chat.completion", "model": "test-model",
                 "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}]}
@@ -26,26 +27,30 @@ def _native_response(provider: str, stream: bool) -> httpx.Response:
         if stream:
             data = f"data: {json.dumps(body)}\n\n"
     if stream:
-        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=data)
-    return httpx.Response(200, json=body)
+        return http.Response(200, headers={"content-type": "text/event-stream"}, content=data)
+    return http.Response(200, json=body)
 
 
 @pytest.mark.parametrize("provider", ["openai", "anthropic", "genai"])
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("override", ["none", "unnamed", "shield", "constructor", "request"])
 def test_native_provider_outbound_agent_selectors(shield_factory, provider, stream, override):
-    pytest.importorskip("google.genai" if provider == "genai" else provider)
+    sdk = pytest.importorskip("google.genai" if provider == "genai" else provider)
+    http = httpx
+    if provider == "anthropic":
+        backend = next(cls.__module__.partition(".")[0] for cls in sdk.DefaultHttpxClient.__mro__ if cls.__name__ == "Client")
+        http = importlib.import_module(backend)
     seen = []
     callback_requests = []
 
     def handler(request):
         seen.append(request)
-        return _native_response(provider, stream)
+        return _native_response(provider, stream, http)
 
     # Two profiles sharing a VK and transport must keep their selectors separate.
     # Calling the first again after the second also catches mutable hook state.
     native_clients = []
-    with httpx.Client(transport=httpx.MockTransport(handler), event_hooks={"request": [callback_requests.append]}) as http_client:
+    with http.Client(transport=http.MockTransport(handler), event_hooks={"request": [callback_requests.append]}) as http_client:
         try:
             for profile in ("planner", "auditor"):
                 extra = {"X-DeepIntShield-Agent": "explicit-" + profile}

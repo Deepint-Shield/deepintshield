@@ -48,6 +48,8 @@ async def main() -> None:
             print("MCP authorization is temporarily unavailable.")
         else:
             print(f"DeepIntShield error [{exc.code}]: {exc.description}")
+    finally:
+        shield.close()
 
 
 if __name__ == "__main__":

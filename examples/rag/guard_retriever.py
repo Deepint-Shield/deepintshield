@@ -1,6 +1,10 @@
-"""Post-retrieval chunk filtering: wrap a retriever so unauthorised chunks are
-dropped (ACL / provenance / injection) before they ever reach the LLM. Works
-with any LangChain/LlamaIndex retriever; here a tiny LangChain stub."""
+"""Filter synchronous and asynchronous retrieval before documents reach an LLM.
+
+Install deepintshield[langchain]. Both calls evaluate through the configured
+gateway; LangChain's async-to-sync delegation is filtered once per retrieval.
+"""
+import asyncio
+
 from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
 
@@ -15,8 +19,17 @@ class DemoRetriever(BaseRetriever):
         ]
 
 
-shield = DeepintShield.from_env()
-retriever = shield.rag.guard_retriever(DemoRetriever())  # mutates in place
+async def main() -> None:
+    with DeepintShield.from_env() as shield:
+        retriever = shield.rag.guard_retriever(DemoRetriever())  # mutates in place
+        query = "what is the visitor policy?"
 
-docs = retriever.invoke("what is the visitor policy?")
-print("allowed chunks:", [d.page_content for d in docs])
+        docs = retriever.invoke(query)
+        print("allowed chunks (sync):", [doc.page_content for doc in docs])
+
+        docs = await retriever.ainvoke(query)
+        print("allowed chunks (async):", [doc.page_content for doc in docs])
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

@@ -14,7 +14,8 @@ consumed by :mod:`deepintshield.frameworks` and re-exported on the client as
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Mapping, Optional
+from inspect import iscoroutinefunction
+from typing import TYPE_CHECKING, Any, Mapping, Optional
 
 import httpx
 
@@ -50,8 +51,10 @@ async def _normalize_agent_selector_headers_async(request: httpx.Request) -> Non
     _normalize_agent_selector_headers(request)
 
 
-def _install_agent_selector_header_hook(client: httpx.Client | httpx.AsyncClient) -> None:
-    hook = _normalize_agent_selector_headers_async if isinstance(client, httpx.AsyncClient) else _normalize_agent_selector_headers
+def _install_agent_selector_header_hook(client: Any) -> None:
+    # Both httpx and httpx2 expose async send methods, but their AsyncClient
+    # classes are unrelated. Match the operation instead of one package type.
+    hook = _normalize_agent_selector_headers_async if iscoroutinefunction(client.send) else _normalize_agent_selector_headers
     hooks = client.event_hooks.setdefault("request", [])
     if hook not in hooks:
         hooks.append(hook)

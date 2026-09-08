@@ -22,7 +22,7 @@ allowed, _ = shield.rag.filter(query=query, chunks=chunks, source_id=os.getenv("
 context = "\n\n".join(c.content for c in allowed)
 
 response = genai.models.generate_content(
-    model=os.getenv("DEEPINTSHIELD_GENAI_MODEL", "gemini-1.5-flash"),
+    model=os.getenv("DEEPINTSHIELD_GENAI_MODEL", "gemini-2.5-flash"),
     contents=f"Context:\n{context}\n\nQuestion: {query}",
 )
 
