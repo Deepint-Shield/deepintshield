@@ -6,6 +6,8 @@ runner.
 
     pip install 'deepintshield[google-adk]'   # google-adk
 """
+import os
+
 from google.adk.agents import Agent
 from google.adk.runners import InMemoryRunner
 
@@ -19,6 +21,10 @@ def crm_read(customer_id: str) -> dict:
     return {"customer_id": customer_id, "name": "Ada"}
 
 
-agent = Agent(name="assistant", model="gemini-2.0-flash", tools=[crm_read])
+agent = Agent(
+    name="assistant",
+    model=shield.google_adk().model(os.getenv("DEEPINTSHIELD_MODEL", "openai/gpt-4o-mini")),
+    tools=[crm_read],
+)
 runner = InMemoryRunner(agent=agent)
 # Drive `runner` as usual; each tool call passes through the PDP first.

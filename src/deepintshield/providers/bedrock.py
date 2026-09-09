@@ -4,6 +4,7 @@ import os
 from typing import TYPE_CHECKING, Any
 
 from ..errors import ErrorCode, _dependency_error
+from ..transport import connection_headers
 
 if TYPE_CHECKING:
     from ..client import DeepintShield
@@ -29,7 +30,7 @@ def build_client(shield: "DeepintShield", *, region_name: str | None = None, **k
         aws_secret_access_key=kwargs.pop("aws_secret_access_key", key),
         **kwargs,
     )
-    headers = shield.headers()
+    headers = connection_headers(shield)
 
     def _inject_headers(request, **_kwargs):
         for name, value in headers.items():

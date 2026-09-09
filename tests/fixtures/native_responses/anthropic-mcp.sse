@@ -1,0 +1,57 @@
+event: response.created
+data: {"type":"response.created","sequence_number":0,"response":{"id":"msg_mcp_results","object":"response","background":false,"created_at":1788933600,"completed_at":null,"error":null,"incomplete_details":null,"instructions":null,"max_output_tokens":null,"max_tool_calls":null,"model":"claude-sonnet-4-5","output":[],"parallel_tool_calls":true,"previous_response_id":null,"prompt_cache_key":null,"presence_penalty":0,"frequency_penalty":0,"reasoning":{"effort":null,"summary":null},"safety_identifier":null,"service_tier":"auto","status":"in_progress","store":true,"temperature":1,"text":{"format":{"type":"text"},"verbosity":"medium"},"top_logprobs":0,"top_p":1,"tool_choice":"auto","tools":[],"truncation":"disabled","usage":null,"extra_fields":{"request_type":"","latency":0,"chunk_index":0}},"item":null,"logprobs":null,"extra_fields":{"request_type":"","latency":0,"chunk_index":0}}
+
+event: response.in_progress
+data: {"type":"response.in_progress","sequence_number":1,"response":{"id":"msg_mcp_results","object":"response","background":false,"created_at":1788933600,"completed_at":null,"error":null,"incomplete_details":null,"instructions":null,"max_output_tokens":null,"max_tool_calls":null,"model":"claude-sonnet-4-5","output":[],"parallel_tool_calls":true,"previous_response_id":null,"prompt_cache_key":null,"presence_penalty":0,"frequency_penalty":0,"reasoning":{"effort":null,"summary":null},"safety_identifier":null,"service_tier":"auto","status":"in_progress","store":true,"temperature":1,"text":{"format":{"type":"text"},"verbosity":"medium"},"top_logprobs":0,"top_p":1,"tool_choice":"auto","tools":[],"truncation":"disabled","usage":null,"extra_fields":{"request_type":"","latency":0,"chunk_index":0}},"item":null,"logprobs":null,"extra_fields":{"request_type":"","latency":0,"chunk_index":0}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","sequence_number":2,"output_index":0,"item":{"id":"mcp_first","type":"mcp_call","status":"in_progress","name":"first","arguments":""},"content_index":1,"logprobs":null,"extra_fields":{"request_type":"","latency":0,"chunk_index":0}}
+
+event: response.mcp_call_arguments.delta
+data: {"type":"response.mcp_call_arguments.delta","sequence_number":3,"output_index":0,"item":null,"content_index":1,"item_id":"mcp_first","delta":"{\"order\":1}","logprobs":null,"extra_fields":{"request_type":"","latency":0,"chunk_index":0}}
+
+event: response.mcp_call_arguments.done
+data: {"type":"response.mcp_call_arguments.done","sequence_number":4,"output_index":0,"item":null,"content_index":1,"item_id":"mcp_first","logprobs":null,"arguments":"{\"order\":1}","extra_fields":{"request_type":"","latency":0,"chunk_index":0}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","sequence_number":5,"output_index":1,"item":{"id":"mcp_second","type":"mcp_call","status":"in_progress","name":"second","arguments":""},"content_index":2,"logprobs":null,"extra_fields":{"request_type":"","latency":0,"chunk_index":0}}
+
+event: response.mcp_call_arguments.delta
+data: {"type":"response.mcp_call_arguments.delta","sequence_number":6,"output_index":1,"item":null,"content_index":2,"item_id":"mcp_second","delta":"{\"order\":2}","logprobs":null,"extra_fields":{"request_type":"","latency":0,"chunk_index":0}}
+
+event: response.mcp_call_arguments.done
+data: {"type":"response.mcp_call_arguments.done","sequence_number":7,"output_index":1,"item":null,"content_index":2,"item_id":"mcp_second","logprobs":null,"arguments":"{\"order\":2}","extra_fields":{"request_type":"","latency":0,"chunk_index":0}}
+
+event: response.mcp_call.failed
+data: {"type":"response.mcp_call.failed","sequence_number":8,"output_index":1,"item":null,"item_id":"mcp_second","logprobs":null,"extra_fields":{"request_type":"","latency":0,"chunk_index":0}}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","sequence_number":9,"output_index":1,"item":{"id":"mcp_second","type":"mcp_call","status":"failed","name":"second","arguments":"{\"order\":2}","output":"synthetic tool failure","error":"MCP tool returned an error"},"item_id":"mcp_second","logprobs":null,"extra_fields":{"request_type":"","latency":0,"chunk_index":0}}
+
+event: response.mcp_call.completed
+data: {"type":"response.mcp_call.completed","sequence_number":10,"output_index":0,"item":null,"item_id":"mcp_first","logprobs":null,"extra_fields":{"request_type":"","latency":0,"chunk_index":0}}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","sequence_number":11,"output_index":0,"item":{"id":"mcp_first","type":"mcp_call","status":"completed","name":"first","arguments":"{\"order\":1}","output":"[{\"type\":\"text\",\"text\":\"blue\"},{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"synthetic-only\"}}]"},"item_id":"mcp_first","logprobs":null,"extra_fields":{"request_type":"","latency":0,"chunk_index":0}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","sequence_number":12,"output_index":2,"item":{"id":"msg_msg_mcp_results_item_2","type":"message","status":"in_progress","role":"assistant","content":[]},"content_index":6,"logprobs":null,"extra_fields":{"request_type":"","latency":0,"chunk_index":0}}
+
+event: response.content_part.added
+data: {"type":"response.content_part.added","sequence_number":13,"output_index":2,"item":null,"content_index":0,"item_id":"msg_msg_mcp_results_item_2","part":{"type":"output_text","text":"","annotations":[],"logprobs":[]},"logprobs":null,"extra_fields":{"request_type":"","latency":0,"chunk_index":0}}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","sequence_number":14,"output_index":2,"item":null,"content_index":0,"item_id":"msg_msg_mcp_results_item_2","delta":"Blue.","logprobs":[],"extra_fields":{"request_type":"","latency":0,"chunk_index":0}}
+
+event: response.output_text.done
+data: {"type":"response.output_text.done","sequence_number":15,"output_index":2,"item":null,"content_index":0,"item_id":"msg_msg_mcp_results_item_2","logprobs":[],"text":"Blue.","extra_fields":{"request_type":"","latency":0,"chunk_index":0}}
+
+event: response.content_part.done
+data: {"type":"response.content_part.done","sequence_number":16,"output_index":2,"item":null,"content_index":0,"item_id":"msg_msg_mcp_results_item_2","part":{"type":"output_text","text":"Blue.","annotations":[],"logprobs":[]},"logprobs":null,"extra_fields":{"request_type":"","latency":0,"chunk_index":0}}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","sequence_number":17,"output_index":2,"item":{"id":"msg_msg_mcp_results_item_2","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"Blue.","annotations":[],"logprobs":[]}]},"content_index":6,"logprobs":null,"extra_fields":{"request_type":"","latency":0,"chunk_index":0}}
+
+event: response.completed
+data: {"type":"response.completed","sequence_number":18,"response":{"id":"msg_mcp_results","object":"response","background":false,"created_at":1788933600,"completed_at":null,"error":null,"incomplete_details":null,"instructions":null,"max_output_tokens":null,"max_tool_calls":null,"model":"claude-sonnet-4-5","output":[{"id":"mcp_first","type":"mcp_call","status":"completed","name":"first","arguments":"{\"order\":1}","output":"[{\"type\":\"text\",\"text\":\"blue\"},{\"type\":\"image\",\"source\":{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"synthetic-only\"}}]"},{"id":"mcp_second","type":"mcp_call","status":"failed","name":"second","arguments":"{\"order\":2}","output":"synthetic tool failure","error":"MCP tool returned an error"},{"id":"msg_msg_mcp_results_item_2","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"Blue.","annotations":[],"logprobs":[]}]}],"parallel_tool_calls":true,"previous_response_id":null,"prompt_cache_key":null,"presence_penalty":0,"frequency_penalty":0,"reasoning":{"effort":null,"summary":null},"safety_identifier":null,"service_tier":"auto","status":"completed","store":true,"temperature":1,"text":{"format":{"type":"text"},"verbosity":"medium"},"top_logprobs":0,"top_p":1,"tool_choice":"auto","tools":[],"truncation":"disabled","usage":null,"extra_fields":{"request_type":"","latency":0,"chunk_index":0}},"item":null,"logprobs":null,"extra_fields":{"request_type":"","latency":0,"chunk_index":0}}
+

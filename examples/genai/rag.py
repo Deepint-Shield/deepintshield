@@ -24,6 +24,7 @@ context = "\n\n".join(c.content for c in allowed)
 response = genai.models.generate_content(
     model=os.getenv("DEEPINTSHIELD_GENAI_MODEL", "gemini-2.5-flash"),
     contents=f"Context:\n{context}\n\nQuestion: {query}",
+    config={"automatic_function_calling": {"disable": True}},
 )
 
 print("Allowed chunks:", [c.chunk_id for c in allowed])

@@ -1450,7 +1450,7 @@ def test_discover_posts_the_contract_payload(shield_factory):
         shield.agentic.engine, _support_graph(), principal_email="alice@corp.com", sync=True
     )
 
-    assert body == {"network_id": "n1", "agents_upserted": 1}
+    assert body == {"network_id": "n1", "agents_upserted": 1, "dispatched": True}
     (_, sent), = [c for c in _CALLS if c[0] == "discover"]
     assert sent["framework"] == "langgraph"
     assert sent["auto_provision"] is True
@@ -1529,7 +1529,7 @@ def test_discover_dedupes_the_same_digest_for_five_minutes(shield_factory):
     first = registry.discover(shield.agentic.engine, _support_graph(), sync=True)
     second = registry.discover(shield.agentic.engine, _support_graph(), sync=True)
 
-    assert first == {"network_id": "n1", "agents_upserted": 1}
+    assert first == {"network_id": "n1", "agents_upserted": 1, "dispatched": True}
     assert second["deduped"] is True and second["dispatched"] is False
     assert second["digest"] == registry.describe_network(_support_graph())["network"]["digest"]
     assert len([c for c in _CALLS if c[0] == "discover"]) == 1
@@ -1618,7 +1618,7 @@ def test_discover_reports_schema_action_or_server_drift_without_waiting(shield_f
     first = registry.discover(shield.agentic.engine, manifest=base, sync=True)
     second = registry.discover(shield.agentic.engine, manifest=drifted, sync=True)
 
-    assert first == second == {"network_id": "n1", "agents_upserted": 1}
+    assert first == second == {"network_id": "n1", "agents_upserted": 1, "dispatched": True}
     assert len([c for c in _CALLS if c[0] == "discover"]) == 2
     # Topology digest stays stable; the full scoped manifest key caused repost.
     posts = [body for kind, body in _CALLS if kind == "discover"]

@@ -20,6 +20,10 @@ class ProviderRegistry:
         from . import anthropic as mod
         return mod.build_client(self._client, **kwargs)
 
+    def async_openai(self, **kwargs: Any):
+        from . import openai as mod
+        return mod.build_async_client(self._client, **kwargs)
+
     def bedrock(self, **kwargs: Any):
         from . import bedrock as mod
         return mod.build_client(self._client, **kwargs)

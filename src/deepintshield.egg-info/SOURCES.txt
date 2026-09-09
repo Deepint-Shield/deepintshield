@@ -57,10 +57,12 @@ src/deepintshield/agentic/integrations/temporal.py
 src/deepintshield/frameworks/__init__.py
 src/deepintshield/frameworks/autogen.py
 src/deepintshield/frameworks/crewai.py
+src/deepintshield/frameworks/google_adk.py
 src/deepintshield/frameworks/langgraph.py
 src/deepintshield/frameworks/llamaindex.py
 src/deepintshield/frameworks/openai_agents.py
 src/deepintshield/frameworks/pydanticai.py
+src/deepintshield/frameworks/strands.py
 src/deepintshield/mcp/__init__.py
 src/deepintshield/mcp/_errors.py
 src/deepintshield/mcp/_native.py
@@ -104,12 +106,17 @@ tests/test_error_surfaces.py
 tests/test_errors.py
 tests/test_gemini_cache.py
 tests/test_genai_contracts.py
+tests/test_langchain_model_compatibility.py
+tests/test_litellm_model_compatibility.py
 tests/test_mcp_native_errors.py
 tests/test_mcp_native_session.py
 tests/test_mcp_preferred_api.py
 tests/test_model_compatibility.py
 tests/test_native_provider_headers.py
 tests/test_obligation_contract.py
+tests/test_openai_primary.py
+tests/test_openai_primary_frameworks.py
+tests/test_openai_primary_orchestrators.py
 tests/test_platform_agentic_workflows.py
 tests/test_platform_rag_workflows.py
 tests/test_prompt_cache.py
@@ -117,5 +124,6 @@ tests/test_providers.py
 tests/test_rag.py
 tests/test_rag_guard.py
 tests/test_rag_redaction.py
+tests/test_strands_current_terminal.py
 tests/test_transport.py
 tests/test_types.py

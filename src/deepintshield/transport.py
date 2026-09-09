@@ -54,8 +54,14 @@ async def _normalize_agent_selector_headers_async(request: httpx.Request) -> Non
 def _install_agent_selector_header_hook(client: Any) -> None:
     # Both httpx and httpx2 expose async send methods, but their AsyncClient
     # classes are unrelated. Match the operation instead of one package type.
-    hook = _normalize_agent_selector_headers_async if iscoroutinefunction(client.send) else _normalize_agent_selector_headers
-    hooks = client.event_hooks.setdefault("request", [])
+    event_hooks = getattr(client, "event_hooks", None)
+    send = getattr(client, "send", None)
+    # Native SDKs can accept other public transports (for example aiohttp).
+    # Preserve them: HTTPX event hooks are an optional transport capability.
+    if not isinstance(event_hooks, dict) or not callable(send):
+        return
+    hook = _normalize_agent_selector_headers_async if iscoroutinefunction(send) else _normalize_agent_selector_headers
+    hooks = event_hooks.setdefault("request", [])
     if hook not in hooks:
         hooks.append(hook)
 
@@ -109,6 +115,25 @@ def connection(
     return shield.endpoint(provider), connection_headers(shield, identity=identity, extra=extra)
 
 
+def openai_connection(
+    shield: "DeepintShield", *, passthrough: bool = False, identity: bool = False, **kwargs: Any,
+) -> dict[str, Any]:
+    """Fresh native OpenAI constructor options; no discovery or inference I/O.
+
+    ``identity=True`` retains the existing opt-in identity lookup. Caller
+    options, including custom transports and API-key callables, pass through.
+    The base URL identifies the protocol; ``provider/model`` selects routing
+    separately on each native inference call.
+    """
+    base_url = shield.openai_passthrough_base_url() if passthrough else shield.openai_base_url()
+    kwargs.setdefault("base_url", base_url)
+    if "api_key" not in kwargs:
+        kwargs["api_key"] = shield.api_key()
+    kwargs.setdefault("timeout", shield.timeout)
+    kwargs["default_headers"] = connection_headers(shield, identity=identity, extra=kwargs.get("default_headers"))
+    return kwargs
+
+
 def http_client(
     shield: "DeepintShield",
     *,
@@ -127,4 +152,4 @@ def http_client(
     )
 
 
-__all__ = ["connection", "connection_headers", "http_client"]
+__all__ = ["connection", "connection_headers", "http_client", "openai_connection"]

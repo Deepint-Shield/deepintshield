@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from ..errors import ErrorCode, _dependency_error
-from ..transport import connection
+from ..transport import connection, _merge_headers
 
 if TYPE_CHECKING:
     from ..client import DeepintShield
@@ -29,7 +29,7 @@ def model(shield: "DeepintShield", model: str = "gpt-4o-mini", *, identity: bool
         model=kwargs.pop("model", model),
         base_url=kwargs.pop("base_url", base_url),
         api_key=kwargs.pop("api_key", shield.api_key()),
-        default_headers={**headers, **(kwargs.pop("default_headers", None) or {})},
+        default_headers=_merge_headers(headers, kwargs.pop("default_headers", None) or {}),
         **kwargs,
     )
 
@@ -49,6 +49,9 @@ def embedder(shield: "DeepintShield", model: str = "text-embedding-3-small", *, 
         model=kwargs.pop("model", model),
         base_url=kwargs.pop("base_url", base_url),
         api_key=kwargs.pop("api_key", shield.api_key()),
-        default_headers={**headers, **(kwargs.pop("default_headers", None) or {})},
+        default_headers=_merge_headers(headers, kwargs.pop("default_headers", None) or {}),
+        # Provider/deployment IDs are opaque to the gateway SDK. LangChain's
+        # OpenAI tokenizer would send token IDs to providers expecting text.
+        check_embedding_ctx_length=kwargs.pop("check_embedding_ctx_length", False),
         **kwargs,
     )

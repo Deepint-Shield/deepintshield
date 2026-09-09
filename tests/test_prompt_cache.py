@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 
 import httpx
 import pytest
@@ -75,6 +76,48 @@ def test_inject_anthropic_emits_ttl_only_when_non_default():
     assert body["system"][0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
 
 
+@pytest.mark.parametrize("automatic", [False, True])
+def test_anthropic_hook_preserves_caller_cache_budget_and_ttl_order(automatic):
+    body = {
+        "model": "claude-sonnet-4-5",
+        "system": "Static instructions",
+        "tools": [{"name": "lookup", "input_schema": {"type": "object"}}],
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": f"Block {index}", "cache_control": {"type": "ephemeral", "ttl": "1h"}}
+            for index in range(3 if automatic else 4)
+        ]}],
+    }
+    if automatic:
+        body["cache_control"] = {"type": "ephemeral"}
+    original = deepcopy(body)
+    request = _make_request("POST", "https://gateway.invalid/anthropic/v1/messages", body=body)
+    build_request_hook(PROVIDER_ANTHROPIC)(request)
+    assert json.loads(request.content) == original
+    assert b"".join(request.stream) == request.content
+    assert int(request.headers["content-length"]) == len(request.content)
+
+
+def test_anthropic_automatic_caching_keeps_system_and_tools_unchanged():
+    body = {
+        "cache_control": {"type": "ephemeral", "ttl": "1h"},
+        "system": "Static instructions",
+        "tools": [{"name": "lookup", "input_schema": {}}],
+    }
+    original = deepcopy(body)
+    _inject_anthropic(body, ttl="5m", breakpoints=("system", "tools"))
+    assert body == original
+
+
+def test_anthropic_schema_properties_do_not_count_as_cache_breakpoints():
+    body = {
+        "system": "Static instructions",
+        "tools": [{"name": "lookup", "input_schema": {"properties": {"cache_control": {"type": "string"}}}}],
+    }
+    _inject_anthropic(body, ttl="5m", breakpoints=("system", "tools"))
+    assert body["system"][0]["cache_control"] == {"type": "ephemeral"}
+    assert body["tools"][0]["cache_control"] == {"type": "ephemeral"}
+
+
 # ────────────────────────── openai prefix hash ──────────────────────────────────
 
 
@@ -116,6 +159,19 @@ def test_inject_openai_respects_caller_key():
 
 def test_inject_openai_noop_without_system_messages():
     body = {"messages": [{"role": "user", "content": "hi"}]}
+    _inject_openai(body)
+    assert "prompt_cache_key" not in body
+
+
+@pytest.mark.parametrize("model", ["openai/gpt-4o-mini", "ft:gpt-4o-mini:org:deployment/variant:id"])
+def test_openai_cache_hint_supports_openai_prefix_and_fine_tunes(model):
+    body = {"model": model, "messages": [{"role": "system", "content": "Static instructions"}]}
+    _inject_openai(body)
+    assert "prompt_cache_key" in body
+
+
+def test_openai_cache_hint_respects_explicit_provider_routing():
+    body = {"model": "deployment", "provider": "anthropic", "messages": [{"role": "system", "content": "S"}]}
     _inject_openai(body)
     assert "prompt_cache_key" not in body
 

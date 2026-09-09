@@ -82,9 +82,30 @@ def _inject_anthropic(
     ttl: str,
     breakpoints: Iterable[str],
 ) -> None:
-    """Mark the configured static prefix sections of an Anthropic Messages body
-    as cacheable. Idempotent: existing cache_control markers are preserved.
+    """Mark the static prefix unless the caller already configured caching.
+
+    Explicit breakpoints and automatic (top-level) caching share a four-slot
+    limit. Adding our own markers can also put a short TTL before a caller's
+    longer TTL, which Anthropic rejects. Preserve caller-managed caching in
+    full rather than augmenting a valid request with incompatible markers.
     """
+    if "cache_control" in body:
+        return
+    for section in ("system", "tools", "messages"):
+        blocks = body.get(section)
+        if not isinstance(blocks, list):
+            continue
+        for block in blocks:
+            if not isinstance(block, dict):
+                continue
+            if "cache_control" in block:
+                return
+            content = block.get("content") if section == "messages" else None
+            if isinstance(content, list) and any(
+                isinstance(item, dict) and "cache_control" in item for item in content
+            ):
+                return
+
     marker = _build_cache_marker(ttl)
     requested = {b for b in breakpoints if b in {"system", "tools", "large_blocks"}}
 
@@ -161,6 +182,15 @@ def _inject_openai(body: dict[str, Any]) -> None:
     Skipped if the caller already set the key.
     """
     if "prompt_cache_key" in body:
+        return
+    # The OpenAI-compatible gateway serves every provider. An OpenAI-specific
+    # hint must not leak into requests routed to another provider or a custom
+    # deployment. Keep model IDs opaque; OpenAI fine-tunes may contain slashes.
+    provider = body.get("provider")
+    if provider is not None and provider != PROVIDER_OPENAI:
+        return
+    model = body.get("model")
+    if isinstance(model, str) and "/" in model and not model.startswith(("openai/", "ft:")):
         return
     messages = body.get("messages")
     if not isinstance(messages, list):

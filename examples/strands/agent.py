@@ -7,6 +7,8 @@ Point ``OpenAIModel(base_url=...)`` at the gateway for the LLM leg
 
     pip install 'deepintshield[strands]'   # strands-agents
 """
+import os
+
 from strands import Agent, tool
 
 from deepintshield import DeepintShield
@@ -21,7 +23,7 @@ def crm_read(customer_id: str) -> dict:
 
 
 agent = Agent(
-    model="anthropic.claude-3-5-sonnet-20241022-v2:0",
+    model=shield.strands().model(os.getenv("DEEPINTSHIELD_MODEL", "openai/gpt-4o-mini")),
     tools=[crm_read],
 )
 print(agent("Look up customer 42"))

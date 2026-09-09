@@ -8,11 +8,10 @@ if TYPE_CHECKING:
     from ..client import DeepintShield
 
 
-def build_model(shield: "DeepintShield", *, model: str = "gpt-4o-mini", **_kwargs: Any):
+def build_model(shield: "DeepintShield", *, model: str = "gpt-4o-mini", **kwargs: Any):
     """Build a PydanticAI OpenAI-compatible model bound to the gateway."""
     try:
-        from pydantic_ai.models.openai import OpenAIChatModel
-        from pydantic_ai.providers.openai import OpenAIProvider
+        from pydantic_ai.models.openai import OpenAIChatModel  # noqa: F401
     except ImportError as exc:  # pragma: no cover
         raise _dependency_error(
             "Install pydantic-ai: pip install 'deepintshield[pydanticai]'",
@@ -20,11 +19,10 @@ def build_model(shield: "DeepintShield", *, model: str = "gpt-4o-mini", **_kwarg
             component="pydanticai",
         ) from exc
 
-    provider = OpenAIProvider(
-        base_url=f"{shield.pydanticai_base_url()}/v1",
-        api_key=shield.api_key(),
-    )
-    return OpenAIChatModel(model, provider=provider)
+    from ..frameworks.pydanticai import model as bind_model
+
+    kwargs.setdefault("base_url", f"{shield.pydanticai_base_url()}/v1")
+    return bind_model(shield, model, **kwargs)
 
 
 def build_agent(shield: "DeepintShield", *, model: str = "gpt-4o-mini", instructions: str | None = None, **kwargs: Any):
@@ -38,8 +36,12 @@ def build_agent(shield: "DeepintShield", *, model: str = "gpt-4o-mini", instruct
             component="pydanticai",
         ) from exc
 
+    model_options = dict(kwargs.pop("model_kwargs", {}))
+    for option in ("base_url", "api_key", "http_client", "default_headers", "timeout", "max_retries", "identity", "profile", "settings", "api", "openai_client", "client_args"):
+        if option in kwargs:
+            model_options[option] = kwargs.pop(option)
     return Agent(
-        build_model(shield, model=model),
+        build_model(shield, model=model, **model_options),
         instructions=instructions or "",
         **kwargs,
     )

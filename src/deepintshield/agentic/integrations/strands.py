@@ -176,7 +176,10 @@ def hook_provider(engine: Any) -> Any:
     the PDP. Imported lazily so ``strands`` is only required on use."""
     try:
         from strands.hooks import HookProvider, HookRegistry
-        from strands.experimental.hooks import BeforeToolInvocationEvent
+        try:
+            from strands.hooks import BeforeToolCallEvent as BeforeToolInvocationEvent
+        except ImportError:
+            from strands.experimental.hooks import BeforeToolInvocationEvent
     except ImportError as error:
         raise GovernanceConfigurationError(
             framework="strands",
@@ -246,17 +249,84 @@ def hook_provider(engine: Any) -> Any:
 
 def _automatic_guard_active() -> bool:
     try:
-        from strands.tools.executors._executor import ToolExecutor
+        from strands.tools.executors import _executor
 
-        return bool(
-            getattr(
-                ToolExecutor._invoke_before_tool_call_hook,
-                "_deepintshield_guarded",
-                False,
-            )
-        )
+        return any(getattr(boundary, "_deepintshield_guarded", False) for boundary in (
+            getattr(_executor.ToolExecutor, "_invoke_before_tool_call_hook", None),
+            getattr(_executor, "_make_execute_tool_terminal", None),
+        ))
     except Exception:
         return False
+
+
+def _enforce_middleware_terminal() -> bool:
+    """Support the final middleware terminal introduced in Strands 1.55.
+
+    Authorization runs inside the terminal, after input middleware has selected
+    the actual tool and arguments, and outside Strands' tool-error handler.
+    Unrecognized execution shapes remain unsupported and fail closed.
+    """
+    try:
+        from strands.tools.executors import _executor
+        from strands._middleware.stages import ExecuteToolContext
+
+        original = _executor._make_execute_tool_terminal
+        if getattr(original, "_deepintshield_guarded", False):
+            return True
+        if tuple(inspect.signature(original).parameters) != ("extra_kwargs",):
+            return False
+        if not {"agent", "tool", "tool_use", "invocation_state"}.issubset(
+            getattr(ExecuteToolContext, "__dataclass_fields__", {})
+        ):
+            return False
+        if not inspect.isasyncgenfunction(original({})):
+            return False
+    except Exception:
+        return False
+
+    @functools.wraps(original)
+    def guarded_factory(extra_kwargs: dict[str, Any]) -> Any:
+        terminal = original(extra_kwargs)
+
+        @public_agentic_boundary
+        async def guarded(ctx: Any) -> Any:
+            if not isinstance(ctx, ExecuteToolContext) or not inspect.isasyncgenfunction(terminal):
+                raise GovernanceConfigurationError(
+                    framework="strands", reason="unsupported tool middleware terminal"
+                )
+            if ctx.tool is not None:
+                if not isinstance(ctx.tool_use, dict) or not isinstance(ctx.tool_use.get("input"), dict):
+                    raise GovernanceConfigurationError(
+                        framework="strands", reason="unsupported final tool arguments"
+                    )
+                from ..enforcement import bind_engine, ensure_topology_reported, resolve_engine
+
+                engine = resolve_engine(ctx.agent)
+                bind_engine(ctx.agent, engine, recursive=True)
+                selected = ctx.tool
+                tool_callable = getattr(selected, "func", None) or getattr(selected, "_func", None) or selected
+                try:
+                    fingerprint = source_fingerprint(tool_callable)
+                except Exception:
+                    fingerprint = ""
+                ensure_topology_reported(engine, ctx.agent, required=True)
+                decision = resolve(
+                    engine,
+                    _tool_name(SimpleNamespace(tool_use=ctx.tool_use, selected_tool=selected)),
+                    (),
+                    ctx.tool_use["input"],
+                    tool_fingerprint=fingerprint,
+                    tool_callable=tool_callable,
+                )
+                ctx.tool_use["input"] = apply_obligations(ctx.tool_use["input"], decision.obligations)
+            async for event in terminal(ctx):
+                yield event
+
+        return guarded
+
+    guarded_factory._deepintshield_guarded = True  # type: ignore[attr-defined]
+    _executor._make_execute_tool_terminal = guarded_factory
+    return True
 
 
 def enforce() -> bool:
@@ -279,7 +349,7 @@ def enforce() -> bool:
 
     original = getattr(ToolExecutor, "_invoke_before_tool_call_hook", None)
     if not callable(original) or not inspect.iscoroutinefunction(original):
-        return False
+        return _enforce_middleware_terminal()
     if getattr(original, "_deepintshield_guarded", False):
         return True
 

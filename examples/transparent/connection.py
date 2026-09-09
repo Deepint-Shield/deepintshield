@@ -1,6 +1,10 @@
 """The framework-agnostic minimal wrapper: point ANY OpenAI-compatible client
 at the gateway with two values - base_url + headers. Everything else (your
-prompts, tools, app code) stays 100% native."""
+prompts, tools, app code) stays 100% native.
+
+For GPT-6 Astra, use client.responses.create(...) as shown in
+../openai/responses.py; gateway-injected MCP tools also require Responses.
+"""
 from openai import OpenAI
 
 from deepintshield import DeepintShield

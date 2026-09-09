@@ -1,3 +1,7 @@
+"""Chat Completions example. For GPT-6 Astra, run responses.py instead:
+gateway-injected MCP tools also require Astra's Responses API.
+"""
+
 import os
 
 from deepintshield import DeepintShield

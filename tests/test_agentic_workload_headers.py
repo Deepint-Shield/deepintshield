@@ -90,8 +90,9 @@ def test_canonical_agentic_data_plane_always_propagates_workload_proof(
         assert seen[path] == ["final-child-t2"]
 
 
-def test_first_discovery_bootstraps_without_workload_proof_when_registration_pending(
-    shield_factory,
+@pytest.mark.parametrize("code", ["agent_registration_pending", "agent_quarantined"])
+def test_discovery_submits_source_when_runtime_credentials_are_unavailable(
+    shield_factory, code,
 ):
     seen: list[tuple[str, str, str]] = []
 
@@ -108,7 +109,7 @@ def test_first_discovery_bootstraps_without_workload_proof_when_registration_pen
                 403,
                 json={
                     "error": {
-                        "code": "agent_registration_pending",
+                        "code": code,
                         "message": (
                             "Agent registration is pending review; complete the "
                             "single registration form before requesting credentials"
@@ -177,6 +178,7 @@ def test_discovery_does_not_acknowledge_incomplete_model_scan(
     )
 
     assert result["error"] == code
+    assert result["dispatched"] is True
 
 
 def test_discovery_acknowledges_completed_model_scan(shield_factory):
@@ -195,6 +197,7 @@ def test_discovery_acknowledges_completed_model_scan(shield_factory):
 
     assert "error" not in result
     assert result["blueprint_scan_status"] == "complete"
+    assert result["dispatched"] is True
 
 
 @pytest.mark.parametrize(

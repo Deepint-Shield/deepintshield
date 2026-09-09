@@ -211,6 +211,7 @@ def test_unknown_public_code_uses_safe_generic_guidance():
 
 
 def test_repository_cli_formats_invalid_gateway_response_with_safe_details():
+    pytest.importorskip("langgraph", reason="repository CLI imports the optional LangGraph framework")
     namespace = runpy.run_path(
         str(Path(__file__).resolve().parents[2] / "test_agentic_new.py")
     )

@@ -5,14 +5,15 @@
 
 Unified Python SDK for DeepIntShield - one import, any provider, any agent framework.
 
-Current release: **2.7.2**, aligned with DeepIntShield Server **2.7.2**.
+Current release: **2.8.0**, aligned with DeepIntShield Server **2.8.0**.
 
-`deepintshield` lets you keep writing idiomatic OpenAI / Anthropic / Bedrock /
-Google GenAI code **and** native agent-framework code (LangGraph, CrewAI,
+The primary inference client is the native **OpenAI Python SDK**, configured
+for the gateway. One connection serves its 29 provider identities using
+provider-qualified model IDs and each model's supported operations. Native
+agent-framework code remains native (LangGraph, CrewAI,
 OpenAI Agents SDK, LlamaIndex, AutoGen, PydanticAI, Temporal, AWS Strands,
-Google ADK, Hermes Agent, OpenClaw) while automatically routing traffic through
-the DeepIntShield gateway for guardrails, RAG filtering, agentic tool control,
-and agent identity.
+Google ADK, Hermes Agent, OpenClaw). Optional Anthropic, Bedrock and Google GenAI
+facades remain available for applications already using those protocols.
 
 You pass a virtual key and base URL, plus a stable `agent_name` — **required**
 for agentic governance, with no default, because the name is the workload's
@@ -43,12 +44,12 @@ and you're done.
 
 ## Install
 
-For a reproducible installation of this release, use `pip install "deepintshield==2.7.2"`.
+For a reproducible installation of this release, use `pip install "deepintshield==2.8.0"`.
 Add the provider and framework extras your application needs:
 
 ```bash
-pip install deepintshield                       # core (chat, RAG, agentic)
-pip install 'deepintshield[openai]'             # + OpenAI SDK
+pip install deepintshield                     # includes native OpenAI SDK
+pip install 'deepintshield[openai]'            # retained compatibility extra
 pip install 'deepintshield[anthropic]'
 pip install 'deepintshield[anthropic-mcp]'       # Anthropic's maintained MCP helpers
 pip install 'deepintshield[bedrock]'
@@ -68,8 +69,25 @@ pip install 'deepintshield[google-adk]'          # Google ADK integration
 pip install 'deepintshield[azure]'               # azure-identity for Entra agent identity
 pip install 'deepintshield[mcp]'                # official MCP Python client
 pip install 'deepintshield[dpop]'               # DPoP proof-of-possession for agent tokens
-pip install 'deepintshield[all]'                # everything
+pip install 'deepintshield[all]'                # legacy aggregate; see version sets below
 ```
+
+Install only the framework extras your application uses. Current upstream
+libraries require separate dependency combinations; `[all]` is retained for
+compatibility and does not guarantee that every framework's latest release can
+coexist. These Python 3.13 combinations resolved with `pip check` passing:
+
+| Extras installed together | Tested native SDK/framework versions |
+| --- | --- |
+| `crewai,llamaindex,langchain,langgraph` | OpenAI 2.54.0; CrewAI 1.15.20; LlamaIndex OpenAI-like LLM 0.8.0 / embeddings 0.4.0; LangChain OpenAI 1.6.1; LangGraph 1.2.11 |
+| `pydanticai,openai-agents,autogen,langchain,langgraph` | OpenAI 3.10.0; PydanticAI slim 2.41.0; OpenAI Agents 0.22.1; AutoGen 0.7.5; LangChain OpenAI 1.6.1; LangGraph 1.2.11 |
+| `strands,google-adk,temporal` | OpenAI 2.54.0; Strands 1.55.0; Google ADK 1.39.1; LiteLLM 1.100.0; Temporal 1.32.0 |
+
+CrewAI and the current LlamaIndex OpenAI adapter constrain OpenAI below 3;
+the current PydanticAI and OpenAI Agents versions require OpenAI 3. See the
+[validation report](../validation_reports/2026-09-09/openai-primary/) for exact
+installed distributions, tests and skips. Mocked gateway tests verify native
+serialization and routing; they do not establish live access to every model.
 
 ## Configure
 
@@ -102,9 +120,7 @@ shield = DeepintShield(
 
 ### Gateway provider breadth
 
-The SDK's native client facades remain OpenAI, Anthropic, classic Bedrock, and
-Google GenAI. They do not grow one method per gateway provider. OpenAI-compatible
-clients can instead select any of the gateway's **29 built-in provider
+OpenAI-compatible clients select the gateway's **29 built-in provider
 identities** with a provider-qualified model. DeepSeek, Amazon Bedrock Mantle,
 Sarvam AI, and Wafer are now available through that routing surface; operation
 support differs by provider and model.
@@ -115,7 +131,64 @@ Configuration and capability matrices live in the canonical gateway guides:
 [Sarvam AI](../deepintshield_server/docs/providers/supported-providers/sarvam.mdx),
 and [Wafer](../deepintshield_server/docs/providers/supported-providers/wafer.mdx).
 
+### Primary native OpenAI client
+
+```python
+from deepintshield import DeepintShield
+
+with DeepintShield.from_env() as shield:
+    with shield.openai() as client:
+        response = client.chat.completions.create(
+            model="anthropic/claude-sonnet-4-5",
+            messages=[{"role": "user", "content": "Hello"}],
+        )
+        print(response.choices[0].message.content)
+```
+
+`shield.async_openai()` returns native `AsyncOpenAI` for `async with` and
+`await client.chat.completions.create(...)`. Both clients retain native request
+arguments, response objects, errors, streaming, retries and lifecycle. The
+installed SDK selects its default HTTP implementation. Caller-supplied native
+transports remain supported; existing HTTP event hooks apply where that
+transport exposes them.
+
+For applications that construct their own clients, the same connection is
+available as fresh public constructor options:
+
+```python
+from openai import OpenAI, AsyncOpenAI
+
+client = OpenAI(**shield.openai_config(max_retries=2))
+async_client = AsyncOpenAI(**shield.openai_config())
+# Close each client using its native lifecycle after use.
+```
+
+Connection preparation reads the existing virtual key and gateway base URL,
+without model discovery or inference requests. The model string is preserved,
+including provider prefixes, deployment names and fine-tuned IDs. Use a model
+enabled by your gateway's credentials and virtual-key policy. Omit optional
+sampling/reasoning settings unless supported by that model; the SDK does not
+invent a universal parameter set.
+
+Choose the native operation the model supports: `chat.completions.create`,
+`responses.create`, `embeddings.create`, `audio.speech.create`,
+`audio.transcriptions.create`, `images.generate/edit`, or `videos.create`.
+For example ElevenLabs speech needs an enabled model and an actual voice ID;
+Runway models use image/video operations. A registered provider does not imply
+support for every operation. The gateway provider/model capability metadata
+describes the available operations; SDK construction performs no discovery.
+
+The [multimodal examples](examples/multimodal/README.md) provide one native
+OpenAI runner covering all 29 provider identities through supported text or
+media operations. Choose an explicit model, inspect a request with `--dry-run`,
+and see the documented limits for PDF, image, audio, video and uploaded-file
+inspection before using your own files.
+
 ### Core client (including streaming)
+
+`shield.chat()` calls Chat Completions. For GPT-6 Astra, use the
+[OpenAI Responses example below](#openai): Astra tool calling requires Responses,
+including when the gateway adds authorized MCP tools to a request.
 
 ```python
 from deepintshield import DeepintShield
@@ -180,16 +253,48 @@ response = openai.chat.completions.create(
 )
 ```
 
-The same client exposes the native Responses API:
+For **GPT-6 Astra**, use the same client's native **Responses API**. The gateway
+can inject authorized MCP tools even when your Python call has no `tools`
+argument; Astra requires Responses for tool calling. Changing
+`reasoning_effort` to `none` does not fix a Chat Completions tools error because
+Astra does not support `none`. See the
+[official OpenAI model guidance](https://developers.openai.com/api/docs/guides/latest-model).
 
 ```python
 response = openai.responses.create(
-    model="gpt-4o-mini",
+    model="gpt-6-astra",
     input="Explain this design in one sentence.",
+    reasoning={"effort": "low"},
     store=False,
 )
 print(response.output_text)
 ```
+
+Use `input` for the prompt and `response.output_text` for the generated text.
+Astra accepts reasoning efforts `low`, `medium`, `high`, `xhigh`, and `max`;
+omit `temperature` and `top_p`. If setting a token budget, use
+`max_output_tokens`, which includes reasoning and visible output. Model access
+still depends on your gateway's provider key and virtual-key policy.
+
+Responses streaming yields typed events, rather than Chat Completions chunks:
+
+```python
+with openai.responses.create(
+    model="gpt-6-astra",
+    input="Explain this design in one sentence.",
+    reasoning={"effort": "low"},
+    store=False,
+    stream=True,
+) as stream:
+    for event in stream:
+        if event.type == "response.output_text.delta":
+            print(event.delta, end="", flush=True)
+print()
+```
+
+Run [examples/openai/responses.py](examples/openai/responses.py) for a complete
+example with optional streaming. Keep the Chat Completions examples for models
+and tool combinations supported on that API.
 
 Responses uses `max_output_tokens` and a `reasoning` object where supported;
 Chat Completions uses its model's supported token-limit field and
@@ -197,61 +302,6 @@ Chat Completions uses its model's supported token-limit field and
 items, including tool calls and opaque reasoning state, and replay them only
 with the same provider and model. The Playground performs this mapping and
 preserves compatible response state in saved sessions.
-
-### Anthropic
-
-```python
-anthropic = shield.anthropic()
-response = anthropic.messages.create(
-    model="claude-sonnet-5",
-    max_tokens=256,
-    messages=[{"role": "user", "content": "hello"}],
-)
-```
-
-`shield.anthropic()` uses the installed Anthropic SDK's default transport class,
-including SDK releases backed by `httpx2`, and retains automatic prompt-cache
-hooks. A caller-supplied `http_client` must be compatible with that installed SDK
-and remains responsible for its own prompt-cache hooks.
-
-### Bedrock
-
-```python
-bedrock = shield.bedrock()
-response = bedrock.converse(
-    modelId="anthropic.claude-3-sonnet-20240229",
-    messages=[{"role": "user", "content": [{"text": "hello"}]}],
-)
-```
-
-### Google GenAI
-
-```python
-genai = shield.genai()
-response = genai.models.generate_content(
-    model="gemini-3.5-flash",
-    contents="hello",
-    config={"automatic_function_calling": {"disable": True}},
-)
-print(response.text)
-```
-
-Disabling automatic function calling (AFC) is optional for this text-only call.
-Recent Google SDK versions warn about direct AFC use even when no callable tools
-are supplied; that warning alone does not mean the request failed. When using
-Python callable tools, Google recommends the chat interface. Multi-turn tool
-workflows also depend on the gateway preserving tool roles and thought signatures;
-a successful text-only request does not verify those conversions.
-
-The gateway's native Gemini conversion preserves model/user tool roles, per-call
-thought signatures, and distinct IDs for parallel calls to the same function.
-SDK regression tests cover direct and chat calls, sync/async streaming, and
-callable-tool continuations. A timeout-only `http_options` override retains the
-gateway destination in SDK 2.7.2 (fixed in 2.7.1); SDK 2.7.0 does not merge that override correctly.
-
-For streaming, use `genai.models.generate_content_stream(...)` or
-`chat.send_message_stream(...)` and read each chunk's `text`. The native async
-interfaces remain available under `genai.aio`.
 
 ### LangChain
 
@@ -358,11 +408,41 @@ shield = DeepintShield.from_env()
 shield.bind("langgraph").model("gpt-4o-mini")
 shield.bind("langgraph").embedder("text-embedding-3-large")
 shield.bind("crewai").llm("gpt-4o-mini")
-shield.bind("openai_agents").apply()
+shield.bind("openai_agents").model("openai/gpt-4o-mini")
 shield.bind("llamaindex").llm("gpt-4o-mini")
 shield.bind("autogen").model_client("gpt-4o-mini")
 shield.bind("pydanticai").model("gpt-4o-mini")
+shield.bind("strands").model("openai/gpt-4o-mini")
+shield.bind("google_adk").model("openai/gpt-4o-mini")
 ```
+
+| Framework | Public binder | Native behavior/settings |
+| --- | --- | --- |
+| LangChain / LangGraph | `bind("langchain").model(id)` / `.embedder(id)` | `ChatOpenAI` / `OpenAIEmbeddings`; `use_responses_api=True` selects Responses; graph nodes and tools stay native |
+| CrewAI | `bind("crewai").llm(id)` | Native OpenAI implementation with `custom_openai=True` when available; `api="responses"` selects Responses |
+| PydanticAI | `bind("pydanticai").model(id)` | `OpenAIChatModel`; `api="responses"` selects `OpenAIResponsesModel`; caller profile/settings preserved |
+| OpenAI Agents | `bind("openai_agents").model(id)` | `OpenAIChatCompletionsModel`; `api="responses"` selects `OpenAIResponsesModel`; native Agent/Runner |
+| LlamaIndex | `bind("llamaindex").llm(id)` / `.embedder(id)` | `OpenAILike` / `OpenAILikeEmbedding`; supply `context_window` and `is_function_calling_model` from the selected model's capabilities |
+| AutoGen | `bind("autogen").model_client(id)` | `OpenAIChatCompletionClient`; supply `model_info` for tools/vision/structured output; unknown-model default permits text only |
+| Strands | `bind("strands").model(id)` | Native `OpenAIModel`; `client_args` accepts native OpenAI constructor options |
+| Google ADK | `bind("google_adk").model(id)` | ADK's native optional `LiteLlm` connector; ADK owns sessions, agents and tools |
+| Temporal | `shield.async_openai()` inside an activity | Native Workflow/Worker/Activity execution; inference I/O stays outside the deterministic workflow |
+
+For broad text interoperability choose Chat Completions; select Responses
+explicitly for a model or tool flow that requires it. A framework may normalize
+OpenAI-standard fields and discard provider extensions. Provider-specific
+features need support in both the gateway conversion and the selected native
+framework adapter. No binder changes existing model choices automatically.
+
+These connection patterns follow the public
+[LangChain](https://docs.langchain.com/oss/python/integrations/chat/openai),
+[LangGraph](https://docs.langchain.com/oss/python/langgraph/streaming),
+[CrewAI](https://docs.crewai.com/v1.15.20/en/learn/litellm-removal-guide),
+[PydanticAI](https://ai.pydantic.dev/models/openai/),
+[LlamaIndex](https://developers.llamaindex.ai/python/framework-api-reference/llms/openai_like/),
+[AutoGen](https://microsoft.github.io/autogen/stable/reference/python/autogen_ext.models.openai.html),
+[Strands](https://strandsagents.com/docs/user-guide/concepts/model-providers/openai/),
+and [ADK](https://google.github.io/adk-docs/agents/models/litellm/) interfaces.
 
 These binders only route native model or embedding traffic through the gateway.
 They are not required for automatic Agentic tool enforcement.
@@ -835,7 +915,99 @@ the client.
 
 ---
 
+## Optional native provider facades
+
+These preserve existing native provider protocols. The primary generic inference
+path above uses the OpenAI SDK across gateway providers. Install only the native
+extra your application needs.
+
+### Anthropic
+
+```python
+anthropic = shield.anthropic()
+response = anthropic.messages.create(
+    model="claude-sonnet-5",
+    max_tokens=256,
+    messages=[{"role": "user", "content": "hello"}],
+)
+```
+
+`shield.anthropic()` uses the installed Anthropic SDK's default transport class,
+including SDK releases backed by `httpx2`, and retains automatic prompt-cache
+hooks. A caller-supplied `http_client` must be compatible with that installed SDK
+and remains responsible for its own prompt-cache hooks.
+
+### Bedrock
+
+```python
+bedrock = shield.bedrock()
+response = bedrock.converse(
+    modelId="anthropic.claude-3-sonnet-20240229",
+    messages=[{"role": "user", "content": [{"text": "hello"}]}],
+)
+```
+
+### Google GenAI
+
+```python
+genai = shield.genai()
+response = genai.models.generate_content(
+    model="gemini-3.5-flash",
+    contents="hello",
+    config={"automatic_function_calling": {"disable": True}},
+)
+print(response.text)
+```
+
+This text-only call explicitly disables automatic function calling (AFC) because
+it has no Python tools to execute. Recent Google SDK versions otherwise warn
+about direct AFC use even without callable tools; a successful response still
+means inference completed. This is an [upstream Google SDK warning](https://github.com/googleapis/python-genai/issues/2902).
+When using Python callable tools, use the native chat interface:
+
+```python
+def add(a: int, b: int) -> int:
+    """Add two integers."""
+    return a + b
+
+chat = genai.chats.create(model="gemini-2.5-flash", config={"tools": [add]})
+print(chat.send_message("What is 2 plus 3?").text)
+
+for chunk in chat.send_message_stream("Now add 4 and 5."):
+    print(chunk.text or "", end="")
+```
+
+Multi-turn tool
+workflows also depend on the gateway preserving tool roles and thought signatures;
+a successful text-only request does not verify those conversions.
+
+The gateway's native Gemini conversion preserves model/user tool roles, per-call
+thought signatures, and distinct IDs for parallel calls to the same function.
+SDK regression tests cover direct and chat calls, sync/async streaming, and
+callable-tool continuations. A timeout-only `http_options` override retains the
+gateway destination in SDK 2.8.0 (fixed in 2.7.1); SDK 2.7.0 does not merge that override correctly.
+
+For streaming, use `genai.models.generate_content_stream(...)` or
+`chat.send_message_stream(...)` and read each chunk's `text`. The native async
+interfaces remain available under `genai.aio`.
+
 ## More examples
 
 See [examples/](https://github.com/deepintai/deepintshield/tree/main/examples) for runnable per-provider chat, RAG, agent, and MCP
 scripts.
+
+## Multimodal content inspection
+
+Native provider SDK integrations remain optional; existing OpenAI SDK clients can
+use the gateway with `OPENAI_BASE_URL` and `OPENAI_API_KEY` (the virtual key).
+Provider/model capabilities determine which file, image and media operations work.
+Routing through the gateway does not guarantee inspection of every binary modality.
+Supported inline PDF text and image metadata from the last message participate in
+selected policies; earlier attachments are not generally re-extracted into policy
+text. PDF inspection-failure checks separately visit all messages. Full-history
+attachment inspection,
+pixel OCR, raw audio/video extraction, file-upload content checks and remote
+file-reference resolution are separate coverage requirements. Dedicated media
+operation evaluation requires the server's `GUARDRAILS_MULTIMODAL=true` setting.
+See the [current coverage boundaries](../OPENAI_PRIMARY_DESIGN.md) before relying
+on full multimodal content protection.

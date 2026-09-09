@@ -3522,6 +3522,7 @@ def _post_discover(
                     "agent_not_registered",
                     "agent_registration_pending",
                     "agent_registration_denied",
+                    "agent_quarantined",
                 }:
                     raise
                 headers = engine._headers(include_agent_token=False)
@@ -3554,6 +3555,9 @@ def _post_discover(
         return {"dispatched": True, "error": "registry_discovery_unavailable"}
     if not isinstance(body, dict):
         return {"dispatched": True}
+    # Dispatch is SDK transport metadata, not a field the gateway must echo.
+    # Keep lifecycle errors below: submitting a report does not approve it.
+    body = {**body, "dispatched": True}
     if body.get("error"):
         return {
             **body,

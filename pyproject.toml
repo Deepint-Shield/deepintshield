@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "deepintshield"
-version = "2.7.2"
+version = "2.8.0"
 description = "Unified Python SDK for routing chat, RAG, agentic tool-gating, identity, and MCP traffic through DeepintShield - drop-in across the top agentic frameworks."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -14,10 +14,11 @@ keywords = ["llm", "agent", "security", "guardrails", "pep", "pdp", "agentic", "
 dependencies = [
   "httpx>=0.28.1",
   "pydantic>=2.0",
+  "openai>=2.32.0,<4",
 ]
 
 [project.optional-dependencies]
-openai = ["openai>=1.75.0"]
+openai = ["openai>=2.32.0,<4"]
 anthropic = ["anthropic>=0.51.0"]
 bedrock = ["boto3>=1.37.0"]
 genai = ["google-genai>=1.12.1"]
@@ -31,18 +32,17 @@ langgraph = [
   "langchain-openai>=0.3.14",
   "langgraph>=0.4.2",
 ]
-pydanticai = ["pydantic-ai>=0.1.1"]
-crewai = ["crewai>=0.70.0"]
+pydanticai = ["pydantic-ai-slim[openai]>=2.41.0,<3"]
+crewai = ["crewai[openai]>=1.15.20,<2"]
 openai-agents = [
-  "openai-agents>=0.21,<1",
-  "openai>=1.75.0",
+  "openai-agents>=0.22.1,<1",
   "mcp>=1.29,<2",
 ]
-llamaindex = ["llama-index>=0.11.0"]
-autogen = ["autogen-agentchat>=0.4.0", "autogen-ext[openai]>=0.4.0"]
-temporal = ["temporalio>=1.7.0"]
-strands = ["strands-agents>=0.1.0"]
-google-adk = ["google-adk>=0.1.0"]
+llamaindex = ["llama-index-llms-openai-like>=0.8.0,<1", "llama-index-embeddings-openai-like>=0.4.0,<1"]
+autogen = ["autogen-agentchat>=0.7.5,<1", "autogen-ext[openai]>=0.7.5,<1"]
+temporal = ["temporalio>=1.32.0,<2"]
+strands = ["strands-agents[openai]>=1.55.0,<2"]
+google-adk = ["google-adk>=1.39.1,<2", "litellm>=1.100.0,<2"]
 azure = ["azure-identity>=1.16.0"]
 # Proof-of-possession (DPoP, RFC 9449) for agent workload tokens. Optional
 # because a deployment whose identity provider does not bind tokens has nothing

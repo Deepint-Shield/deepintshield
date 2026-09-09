@@ -192,12 +192,36 @@ class DeepintShield:
     # ─────────────────────────── provider shortcuts ──────────────────────────
 
     def openai(self, *, passthrough: bool = False, **kwargs: Any):
+        """Return the native OpenAI client configured for the gateway.
+
+        For GPT-6 Astra, call ``client.responses.create(model="gpt-6-astra",
+        input="Hello", reasoning={"effort": "low"})`` and read
+        ``response.output_text``. Astra tool calling requires Responses,
+        including gateway-injected MCP tools. Omit ``temperature`` and
+        ``top_p``; ``none`` reasoning is unsupported.
+        See https://developers.openai.com/api/docs/guides/latest-model.
+        """
         from .providers.openai import build_client
         return build_client(self, passthrough=passthrough, **kwargs)
 
     def anthropic(self, *, passthrough: bool = False, **kwargs: Any):
         from .providers.anthropic import build_client
         return build_client(self, passthrough=passthrough, **kwargs)
+
+    def async_openai(self, *, passthrough: bool = False, **kwargs: Any):
+        """Native AsyncOpenAI for every compatible gateway inference operation."""
+        from .providers.openai import build_async_client
+        return build_async_client(self, passthrough=passthrough, **kwargs)
+
+    def openai_config(self, *, passthrough: bool = False, identity: bool = False, **kwargs: Any) -> dict[str, Any]:
+        """Native OpenAI constructor settings from this client's connection.
+
+        Use ``OpenAI(**shield.openai_config())`` or its async equivalent when
+        application code owns the native client. No model or inference defaults
+        are introduced; ordinary construction requires only VK and base URL.
+        """
+        from .transport import openai_connection
+        return openai_connection(self, passthrough=passthrough, identity=identity, **kwargs)
 
     def bedrock(self, **kwargs: Any):
         from .providers.bedrock import build_client
@@ -350,6 +374,12 @@ class DeepintShield:
     def autogen(self):
         return self.bind("autogen")
 
+    def strands(self):
+        return self.bind("strands")
+
+    def google_adk(self):
+        return self.bind("google_adk")
+
     # ─────────────────────────── HTTP + guardrails ───────────────────────────
 
     def request(
@@ -466,6 +496,11 @@ class DeepintShield:
         ``stream=False`` returns the decoded response object. ``stream=True``
         returns a lazy :class:`~deepintshield.streaming.ChatCompletionStream`;
         use it as a context manager or close it when stopping early.
+
+        This method always uses Chat Completions. For GPT-6 Astra with tools
+        (including gateway-injected MCP tools), use
+        ``shield.openai().responses.create(model="gpt-6-astra", input=...)``.
+        See https://developers.openai.com/api/docs/guides/latest-model.
         """
         body = {"model": model, "messages": messages, "stream": stream, **kwargs}
         if stream:

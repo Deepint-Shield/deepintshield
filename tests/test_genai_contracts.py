@@ -1,6 +1,7 @@
 """Native Google SDK contracts exercised entirely through mocked HTTP traffic."""
 
 import json
+import logging
 
 import httpx
 import pytest
@@ -10,6 +11,22 @@ from google.genai import types
 
 
 MODEL = "gemini-3.5-flash"
+
+
+@pytest.fixture
+def afc_warnings(monkeypatch, caplog):
+    from google.genai import models
+
+    # Newer upstream releases log once per class/process. Reset only in tests
+    # so an earlier direct call cannot hide a warning from the recommended API.
+    for model_class in (models.Models, models.AsyncModels):
+        if hasattr(model_class, "_logged_afc_warning"):
+            monkeypatch.setattr(model_class, "_logged_afc_warning", False)
+    caplog.set_level(logging.WARNING, logger="google_genai.models")
+    return lambda: [
+        record.getMessage() for record in caplog.records
+        if "Direct use of automatic function calling" in record.getMessage()
+    ]
 
 
 def _response(request, parts):
@@ -32,7 +49,7 @@ def _assert_gateway_request(request, *, stream):
 
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("disable_afc", [False, True])
-def test_genai_plain_content_keeps_native_defaults(shield_factory, stream, disable_afc):
+def test_genai_plain_content_keeps_native_defaults(shield_factory, stream, disable_afc, afc_warnings):
     requests = []
 
     def handler(request):
@@ -58,13 +75,15 @@ def test_genai_plain_content_keeps_native_defaults(shield_factory, stream, disab
             assert not body.get("tools")
             assert not body.get("generationConfig")
             assert "automatic_function_calling" not in body
+            if disable_afc:
+                assert not afc_warnings()
         finally:
             client.close()
 
 
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("use_chat", [False, True])
-def test_genai_automatic_function_roundtrip_preserves_signatures(shield_factory, stream, use_chat):
+def test_genai_automatic_function_roundtrip_preserves_signatures(shield_factory, stream, use_chat, afc_warnings):
     requests = []
     calls = []
 
@@ -104,6 +123,7 @@ def test_genai_automatic_function_roundtrip_preserves_signatures(shield_factory,
             assert followup[-1]["parts"][0]["functionResponse"] == {"name": "add", "response": {"result": 5}}
             assert config.tools == [add], "SDK options remain reusable after a tool round trip"
             if use_chat:
+                assert not afc_warnings()
                 history = chat.get_history()
                 assert history[0].parts[0].text == "2 + 3?"
                 assert history[-1].parts[0].text == "5"
@@ -165,7 +185,8 @@ def test_genai_custom_http_options_retain_gateway_routing(shield_factory, as_dic
 @pytest.mark.asyncio
 @pytest.mark.parametrize("stream", [False, True])
 @pytest.mark.parametrize("use_chat", [False, True])
-async def test_genai_async_content_and_chat(shield_factory, stream, use_chat):
+@pytest.mark.parametrize("disable_afc", [False, True])
+async def test_genai_async_content_and_chat(shield_factory, stream, use_chat, disable_afc, afc_warnings):
     requests = []
 
     def handler(request):
@@ -176,16 +197,19 @@ async def test_genai_async_content_and_chat(shield_factory, stream, use_chat):
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as transport:
         client = shield.genai(http_options=types.HttpOptions(httpx_async_client=transport))
         try:
+            config = {"automatic_function_calling": {"disable": True}} if disable_afc else None
             if use_chat:
-                chat = client.aio.chats.create(model=MODEL)
+                chat = client.aio.chats.create(model=MODEL, config=config)
                 response = await (chat.send_message_stream("hello") if stream else chat.send_message("hello"))
             else:
                 generate = client.aio.models.generate_content_stream if stream else client.aio.models.generate_content
-                response = await generate(model=MODEL, contents="hello")
+                response = await generate(model=MODEL, contents="hello", config=config)
             text = "".join([chunk.text or "" async for chunk in response]) if stream else response.text
             assert text == "hello"
             assert len(requests) == 1
             _assert_gateway_request(requests[0], stream=stream)
+            if use_chat or disable_afc:
+                assert not afc_warnings()
         finally:
             await client.aio.aclose()
             client.close()
@@ -193,7 +217,7 @@ async def test_genai_async_content_and_chat(shield_factory, stream, use_chat):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("stream", [False, True])
-async def test_genai_async_chat_executes_callable_roundtrip(shield_factory, stream):
+async def test_genai_async_chat_executes_callable_roundtrip(shield_factory, stream, afc_warnings):
     requests = []
     calls = []
 
@@ -217,6 +241,7 @@ async def test_genai_async_chat_executes_callable_roundtrip(shield_factory, stre
             text = "".join([chunk.text or "" async for chunk in response]) if stream else response.text
             assert text == "5"
             assert calls == [(2, 3)]
+            assert not afc_warnings()
             assert len(requests) == 2
             for request in requests:
                 _assert_gateway_request(request, stream=stream)

@@ -3,8 +3,8 @@
 
 # deepintshield - examples
 
-These examples target SDK **2.7.2** and DeepIntShield Server **2.7.2**.
-Install the matching release with `pip install "deepintshield==2.7.2"`
+These examples target SDK **2.8.0** and DeepIntShield Server **2.8.0**.
+Install the matching release with `pip install "deepintshield==2.8.0"`
 and add the extras required by your example.
 
 Every example is runnable and uses the real provider/framework SDK. Constructing
@@ -27,17 +27,48 @@ export DEEPINTSHIELD_REQUESTER="user@example.com"
 
 python examples/agentic/status.py        # is this agent governed yet?
 python examples/openai/chat.py
+python examples/openai/async_chat.py     # native AsyncOpenAI
+python examples/openai/responses.py     # GPT-6 Astra via Responses
+python examples/openai/responses.py --stream
 python examples/agentic/decorator.py
 python examples/crewai/transparent.py
 ```
 
 Install the matching extra per example, e.g. `pip install 'deepintshield[crewai]'`.
 
+The primary inference path is `shield.openai()` / `shield.async_openai()`, or
+`OpenAI(**shield.openai_config())` when constructing a native client yourself.
+Select a supported provider-qualified model through `DEEPINTSHIELD_MODEL` in
+the generic examples. Framework binders return native model objects; native
+graphs, agents, runners and workers still execute your application.
+
+Install framework examples in the separate tested dependency combinations in
+the [SDK README](../README.md#install). Current CrewAI/LlamaIndex require
+OpenAI 2; current PydanticAI/OpenAI Agents require OpenAI 3. The legacy `[all]`
+extra does not guarantee all latest upstream releases can coexist.
+
 Select model IDs enabled for your gateway and provider keys. Provider examples
 accept `DEEPINTSHIELD_ANTHROPIC_MODEL` (default `claude-sonnet-4-6`) and
 `DEEPINTSHIELD_GENAI_MODEL` (default `gemini-2.5-flash`), including their
 passthrough examples. Override these values when your configured catalog or
 provider access differs; a sample default does not grant access to a model.
+
+### GPT-6 Astra: use Responses
+
+Run `openai/responses.py` for Astra. It reads the gateway and virtual key from
+the environment above and uses `shield.openai().responses.create(...)` with
+`input`, `reasoning={"effort": "low"}`, and `response.output_text`.
+`--stream` prints `response.output_text.delta` events. Set
+`DEEPINTSHIELD_MODEL` to another Responses-compatible model if needed; the
+general Chat examples retain their existing defaults.
+
+The gateway can add authorized MCP tools even when a call omits `tools`.
+Astra tool calling requires Responses, so changing only the model in
+`shield.chat()` or `client.chat.completions.create()` can produce a 400.
+Astra supports `low`, `medium`, `high`, `xhigh`, and `max` reasoning;
+`none` is unsupported. Omit `temperature` and `top_p`; use
+`max_output_tokens` if you need an output budget. See the
+[official OpenAI model guidance](https://developers.openai.com/api/docs/guides/latest-model).
 
 For a new `DEEPINTSHIELD_AGENT_NAME`, a successful first native execution
 capture raises a marked `RuntimeError` with code `agent_registration_pending`
@@ -53,6 +84,7 @@ explanation; examples do not catch normal governance outcomes to reformat them.
 
 | Folder | What it shows |
 | --- | --- |
+| [multimodal/](multimodal/README.md) | Native OpenAI text and media examples for all 29 provider identities, explicit model selection, synthetic image/PDF fixtures and offline request previews |
 | `agentic/status.py` | Startup healthcheck - refuse to serve traffic this agent is not enrolled for |
 | `agentic/obligations.py` | What each MASK obligation redacts, positional arguments included |
 | `agentic/decorator.py` | Advanced explicit per-function `@shield.agentic.tool` API |
@@ -76,9 +108,14 @@ including [DeepSeek](../../deepintshield_server/docs/providers/supported-provide
 and [Wafer](../../deepintshield_server/docs/providers/supported-providers/wafer.mdx).
 No provider-specific SDK wrapper is implied by the gateway registration.
 
+For vision, PDFs, generated images, speech, transcription, video and uploaded
+file references, use the [multimodal runner](multimodal/README.md). Its
+provider/operation table identifies each example's input and endpoint, and its
+`--list` and `--dry-run` modes need no credentials.
+
 | Folder | Files |
 | --- | --- |
-| `openai/` | `chat.py`, `rag.py`, `mcp.py`, `agent.py` |
+| `openai/` | `responses.py` (Astra, with `--stream`), `chat.py`, `async_chat.py`, `rag.py`, `mcp.py`, `agent.py` |
 | `anthropic/` | `chat.py`, `rag.py`, `mcp.py` |
 | `bedrock/` | `chat.py`, `rag.py` |
 | `genai/` | `chat.py`, `rag.py` |
@@ -109,8 +146,9 @@ applications, but new code does not attach anything per worker or agent.
 | Folder | Required application change | Governed boundary |
 | --- | --- | --- |
 | `temporal/worker.py` | none after client construction | injected `ActivityInboundInterceptor` |
-| `strands/agent.py` | none after client construction | final `ToolExecutor` dispatch |
-| `google_adk/agent.py` | none after client construction | final normal/live/threaded dispatch |
+| `temporal/inference.py` | `shield.async_openai()` inside a native activity | injected `ActivityInboundInterceptor`; workflow remains deterministic |
+| `strands/agent.py` | `shield.strands().model(id)` routes inference | final `ToolExecutor` dispatch after callbacks and middleware |
+| `google_adk/agent.py` | `shield.google_adk().model(id)` uses ADK's native LiteLLM connector | final normal/live/threaded dispatch |
 | `hermes/plugin.py` | load the host bootstrap plugin | central `model_tools` dispatcher |
 | `openclaw/README.md` | `shield.agentic.openclaw_config()` + TS plugin | `models.providers` + `before_tool_call` |
 

@@ -12,6 +12,7 @@ import httpx
 import pytest
 
 from deepintshield._prompt_cache import PROVIDER_OPENAI, build_request_hook
+from .native_sdk_helpers import openai_backend
 
 
 # New models and provider/deployment prefixes must stay opaque to the SDK.
@@ -32,13 +33,15 @@ MODELS = [
 ] + [f"{provider}/new-release/deployment-model" for provider in CHAT_PROVIDERS]
 
 
-def native_response(protocol: str, model: str, stream: bool) -> httpx.Response:
+def native_response(protocol: str, model: str, stream: bool, http=httpx):
     if protocol == "chat":
         body = {
             "id": "chat-mock",
+            "created": 0,
             "object": "chat.completion",
             "model": model,
             "choices": [{"index": 0, "message": {"role": "assistant", "content": "OK"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
         }
         if stream:
             body["object"] = "chat.completion.chunk"
@@ -51,6 +54,7 @@ def native_response(protocol: str, model: str, stream: bool) -> httpx.Response:
             "created_at": 0,
             "status": "completed",
             "model": model,
+            "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
             "output": [{
                 "id": "msg-mock", "type": "message", "role": "assistant", "status": "completed",
                 "content": [{"type": "output_text", "text": "OK", "annotations": []}],
@@ -60,8 +64,8 @@ def native_response(protocol: str, model: str, stream: bool) -> httpx.Response:
             event = {"type": "response.completed", "sequence_number": 0, "response": body}
             wire = f"event: response.completed\ndata: {json.dumps(event)}\n\n"
     if stream:
-        return httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=httpx.ByteStream(wire.encode()))
-    return httpx.Response(200, json=body)
+        return http.Response(200, headers={"content-type": "text/event-stream"}, stream=http.ByteStream(wire.encode()))
+    return http.Response(200, json=body)
 
 
 @pytest.mark.parametrize("model", MODELS)
@@ -70,16 +74,16 @@ def native_response(protocol: str, model: str, stream: bool) -> httpx.Response:
 def test_native_openai_paths_preserve_model_ids_without_sampling_or_tool_defaults(
     shield_factory, model, stream, protocol,
 ):
-    pytest.importorskip("openai")
+    _, http = openai_backend()
     seen = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request)
-        return native_response(protocol, model, stream)
+        return native_response(protocol, model, stream, http)
 
     shield = shield_factory(lambda _: pytest.fail("native requests must use the selected transport"), base_url="https://gateway.invalid")
-    with httpx.Client(
-        transport=httpx.MockTransport(handler),
+    with http.Client(
+        transport=http.MockTransport(handler),
         event_hooks={"request": [build_request_hook(PROVIDER_OPENAI)]},
     ) as transport:
         with shield.openai(http_client=transport, max_retries=0) as client:
@@ -109,6 +113,8 @@ def test_native_openai_paths_preserve_model_ids_without_sampling_or_tool_default
     body = json.loads(request.content)
     assert body["model"] == model
     assert body["stream"] is stream
+    if "/" in model and not model.startswith("openai/"):
+        assert "prompt_cache_key" not in body
     for parameter in ("temperature", "top_p", "max_tokens", "max_completion_tokens", "max_output_tokens", "tools", "tool_choice", "reasoning", "reasoning_effort"):
         assert parameter not in body
 
@@ -141,16 +147,16 @@ def test_unified_chat_preserves_explicit_reasoning_and_completion_limits(shield_
 
 
 def test_native_responses_preserves_explicit_reasoning_tools_and_output_limit(shield_factory):
-    pytest.importorskip("openai")
+    _, http = openai_backend()
     seen = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request)
-        return native_response("responses", "gpt-5.6-sol", False)
+        return native_response("responses", "gpt-5.6-sol", False, http)
 
     shield = shield_factory(lambda _: pytest.fail("unexpected direct request"), base_url="https://gateway.invalid")
     tools = [{"type": "function", "name": "lookup", "parameters": {"type": "object", "properties": {}}}]
-    with httpx.Client(transport=httpx.MockTransport(handler)) as transport:
+    with http.Client(transport=http.MockTransport(handler)) as transport:
         with shield.openai(http_client=transport, max_retries=0) as client:
             client.responses.create(
                 model="gpt-5.6-sol", input="Hello", reasoning={"effort": "high"},

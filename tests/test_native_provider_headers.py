@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import importlib
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -37,7 +38,7 @@ def _native_response(provider: str, stream: bool, http=httpx):
 def test_native_provider_outbound_agent_selectors(shield_factory, provider, stream, override):
     sdk = pytest.importorskip("google.genai" if provider == "genai" else provider)
     http = httpx
-    if provider == "anthropic":
+    if provider in {"anthropic", "openai"}:
         backend = next(cls.__module__.partition(".")[0] for cls in sdk.DefaultHttpxClient.__mro__ if cls.__name__ == "Client")
         http = importlib.import_module(backend)
     seen = []
@@ -106,3 +107,74 @@ def test_native_provider_outbound_agent_selectors(shield_factory, provider, stre
         finally:
             for client in native_clients:
                 client.close()
+
+
+@pytest.mark.parametrize("override", ["none", "unnamed", "shield"])
+def test_bedrock_outbound_attribution(shield_factory, monkeypatch, override):
+    pytest.importorskip("boto3")
+    from botocore.awsrequest import AWSResponse
+
+    seen = []
+    clients = []
+    response_body = json.dumps({
+        "output": {"message": {"role": "assistant", "content": [{"text": "ok"}]}},
+        "stopReason": "end_turn",
+        "usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2},
+        "metrics": {"latencyMs": 1},
+    }).encode()
+
+    def send(request):
+        seen.append(request)
+        return AWSResponse(
+            request.url,
+            200,
+            {"content-type": "application/json"},
+            SimpleNamespace(stream=lambda: iter([response_body])),
+        )
+
+    try:
+        for profile in ("planner", "auditor"):
+            shield = shield_factory(
+                lambda _: pytest.fail("Bedrock attribution must not trigger Agentic discovery"),
+                base_url="http://gateway.invalid",
+                agent_name="" if override == "unnamed" else profile,
+                app_name="bedrock-app",
+                requester="reader@example.test",
+                requester_role="developer",
+                default_headers={"X-DeepIntShield-Agent": "explicit-" + profile}
+                if override == "shield" else None,
+            )
+            client = shield.bedrock(region_name="us-west-2")
+            clients.append(client)
+            monkeypatch.setattr(client._endpoint.http_session, "send", send)
+
+        # Shared VKs must retain distinct profiles across successive native calls.
+        for index in (0, 1, 0):
+            result = clients[index].converse(
+                modelId="test-model",
+                messages=[{"role": "user", "content": [{"text": "hello"}]}],
+            )
+            assert result["output"]["message"]["content"] == [{"text": "ok"}]
+            request = seen[-1]
+            headers = httpx.Headers(request.headers)
+            profile = ("planner", "auditor")[index]
+            expected = None if override == "unnamed" else profile
+            if override == "shield":
+                expected = "explicit-" + profile
+            assert headers.get_list("x-deepintshield-agent") == ([] if expected is None else [expected])
+            assert headers["x-deepintshield-vk"] == "sk-ds-test"
+            assert headers["x-deepintshield-app"] == "bedrock-app"
+            assert headers["x-deepintshield-requester"] == "reader@example.test"
+            assert headers["x-deepintshield-requester-role"] == "developer"
+            assert "x-agent-subject" not in headers
+            assert "x-deepintshield-agent-principal" not in headers
+            assert "x-agent-token" not in headers
+            assert request.method == "POST"
+            assert request.url == "http://gateway.invalid/bedrock/model/test-model/converse"
+            assert json.loads(request.body) == {
+                "messages": [{"role": "user", "content": [{"text": "hello"}]}],
+            }
+        assert len(seen) == 3
+    finally:
+        for client in clients:
+            client.close()

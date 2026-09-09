@@ -31,9 +31,11 @@ _ALIASES = {
     "ag2": "autogen",
     "pydantic-ai": "pydanticai",
     "pydantic_ai": "pydanticai",
+    "google-adk": "google_adk",
+    "adk": "google_adk",
 }
 
-_KNOWN = {"langgraph", "crewai", "openai_agents", "llamaindex", "autogen", "pydanticai"}
+_KNOWN = {"langgraph", "crewai", "openai_agents", "llamaindex", "autogen", "pydanticai", "strands", "google_adk"}
 
 
 class FrameworkBinder:

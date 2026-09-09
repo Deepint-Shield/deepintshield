@@ -1,3 +1,7 @@
+"""RAG with Chat Completions. For GPT-6 Astra, use responses.py's request
+pattern with the filtered context as input; Astra tools require Responses.
+"""
+
 import os
 
 from deepintshield import DeepintShield, build_chunk

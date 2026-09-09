@@ -2,7 +2,7 @@
 import operator
 from typing import Annotated, Sequence, TypedDict
 
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langgraph.graph import END, START, StateGraph
 
 from deepintshield import DeepintShield
@@ -20,15 +20,19 @@ def agent_node(state: AgentState):
                 tool_calls=[{
                     "name": "knowledge_search",
                     "args": {"query": state["messages"][-1].content},
-                    "action_class": "read",
+                    "id": "call_knowledge_search",
                 }],
             )
         ]
     }
 
 
-def tools_node(_state: AgentState):
-    return {"messages": [AIMessage(content="Visitors must remain escorted in secure areas.")]}
+def tools_node(state: AgentState):
+    call = state["messages"][-1].tool_calls[0]
+    return {"messages": [ToolMessage(
+        content="Visitors must remain escorted in secure areas.",
+        tool_call_id=call["id"], name=call["name"],
+    )]}
 
 
 shield = DeepintShield.from_env()

@@ -1,0 +1,30 @@
+event: response.created
+data: {"type":"response.created","sequence_number":0,"response":{"id":"chatcmpl-synthetic","object":"response","background":false,"created_at":1700000000,"completed_at":null,"error":null,"incomplete_details":null,"instructions":null,"max_output_tokens":null,"max_tool_calls":null,"model":"synthetic-chat-model","output":[],"parallel_tool_calls":true,"previous_response_id":null,"prompt_cache_key":null,"presence_penalty":0,"frequency_penalty":0,"reasoning":{"effort":null,"summary":null},"safety_identifier":null,"service_tier":"auto","status":"in_progress","store":true,"temperature":1,"text":{"format":{"type":"text"},"verbosity":"medium"},"top_logprobs":0,"top_p":1,"tool_choice":"auto","tools":[],"truncation":"disabled","usage":null,"extra_fields":{"request_type":"","latency":0,"chunk_index":0}},"item":null,"logprobs":null,"extra_fields":{"request_type":"","latency":0,"chunk_index":0}}
+
+event: response.in_progress
+data: {"type":"response.in_progress","sequence_number":1,"response":{"id":"chatcmpl-synthetic","object":"response","background":false,"created_at":1700000000,"completed_at":null,"error":null,"incomplete_details":null,"instructions":null,"max_output_tokens":null,"max_tool_calls":null,"model":"synthetic-chat-model","output":[],"parallel_tool_calls":true,"previous_response_id":null,"prompt_cache_key":null,"presence_penalty":0,"frequency_penalty":0,"reasoning":{"effort":null,"summary":null},"safety_identifier":null,"service_tier":"auto","status":"in_progress","store":true,"temperature":1,"text":{"format":{"type":"text"},"verbosity":"medium"},"top_logprobs":0,"top_p":1,"tool_choice":"auto","tools":[],"truncation":"disabled","usage":null,"extra_fields":{"request_type":"","latency":0,"chunk_index":0}},"item":null,"logprobs":null,"extra_fields":{"request_type":"","latency":0,"chunk_index":0}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","sequence_number":2,"output_index":0,"item":{"id":"msg_chatcmpl-synthetic_item_0","type":"message","status":"in_progress","role":"assistant","content":[]},"logprobs":null,"extra_fields":{"request_type":"","latency":0,"chunk_index":0}}
+
+event: response.content_part.added
+data: {"type":"response.content_part.added","sequence_number":3,"output_index":0,"item":null,"content_index":0,"item_id":"msg_chatcmpl-synthetic_item_0","part":{"type":"output_text","text":"","annotations":[],"logprobs":[]},"logprobs":null,"extra_fields":{"request_type":"","latency":0,"chunk_index":0}}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","sequence_number":4,"output_index":0,"item":null,"content_index":0,"item_id":"msg_chatcmpl-synthetic_item_0","delta":"Bl","logprobs":[],"extra_fields":{"request_type":"","latency":0,"chunk_index":0}}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","sequence_number":5,"output_index":0,"item":null,"content_index":0,"item_id":"msg_chatcmpl-synthetic_item_0","delta":"ue","logprobs":[],"extra_fields":{"request_type":"","latency":0,"chunk_index":0}}
+
+event: response.output_text.done
+data: {"type":"response.output_text.done","sequence_number":6,"output_index":0,"item":null,"content_index":0,"item_id":"msg_chatcmpl-synthetic_item_0","logprobs":[],"text":"Blue","extra_fields":{"request_type":"","latency":0,"chunk_index":0}}
+
+event: response.content_part.done
+data: {"type":"response.content_part.done","sequence_number":7,"output_index":0,"item":null,"content_index":0,"item_id":"msg_chatcmpl-synthetic_item_0","part":{"type":"output_text","text":"Blue","annotations":[],"logprobs":[]},"logprobs":null,"extra_fields":{"request_type":"","latency":0,"chunk_index":0}}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","sequence_number":8,"output_index":0,"item":{"id":"msg_chatcmpl-synthetic_item_0","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"Blue","annotations":[],"logprobs":[]}]},"item_id":"msg_chatcmpl-synthetic_item_0","logprobs":null,"extra_fields":{"request_type":"","latency":0,"chunk_index":0}}
+
+event: response.completed
+data: {"type":"response.completed","sequence_number":9,"response":{"id":"chatcmpl-synthetic","object":"response","background":false,"created_at":1700000000,"completed_at":null,"error":null,"incomplete_details":null,"instructions":null,"max_output_tokens":null,"max_tool_calls":null,"model":"synthetic-chat-model","output":[{"id":"msg_chatcmpl-synthetic_item_0","type":"message","status":"completed","role":"assistant","content":[{"type":"output_text","text":"Blue","annotations":[],"logprobs":[]}]}],"parallel_tool_calls":true,"previous_response_id":null,"prompt_cache_key":null,"presence_penalty":0,"frequency_penalty":0,"reasoning":{"effort":null,"summary":null},"safety_identifier":null,"service_tier":"auto","status":"completed","store":true,"temperature":1,"text":{"format":{"type":"text"},"verbosity":"medium"},"top_logprobs":0,"top_p":1,"tool_choice":"auto","tools":[],"truncation":"disabled","usage":null,"extra_fields":{"request_type":"","latency":0,"chunk_index":0}},"item":null,"logprobs":null,"extra_fields":{"request_type":"","latency":0,"chunk_index":0}}
+
