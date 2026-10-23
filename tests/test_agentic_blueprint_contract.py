@@ -326,6 +326,7 @@ def test_langgraph_composite_node_is_covered_by_its_composition():
     source and every graph of this shape was refused as incomplete coverage."""
     from operator import itemgetter
 
+    pytest.importorskip("langchain_core")
     from langchain_core.runnables import Runnable, RunnableLambda, RunnableParallel
 
     class Echo(Runnable):
@@ -364,6 +365,7 @@ def test_langgraph_composite_node_is_covered_by_its_composition():
 def test_langgraph_composite_node_with_unreadable_callable_stays_uncovered():
     """Fail closed exactly as for a plain function: a callable inside the
     composition whose source cannot be read leaves the node without source."""
+    pytest.importorskip("langchain_core")
     from langchain_core.runnables import RunnableLambda, RunnableParallel
 
     namespace: dict = {}
@@ -388,6 +390,7 @@ def test_langgraph_discovery_covers_a_composite_node_with_its_composition():
     as a tool keyed by the node and as the agent node's own artifact."""
     from operator import itemgetter
 
+    pytest.importorskip("langchain_core")
     from langchain_core.runnables import RunnableLambda, RunnableParallel
 
     from deepintshield.agentic import registry
@@ -491,6 +494,7 @@ def test_langgraph_composite_node_gate_attests_the_same_composition():
     from operator import itemgetter
     from types import SimpleNamespace
 
+    pytest.importorskip("langchain_core")
     from langchain_core.runnables import RunnableLambda, RunnableParallel
 
     from deepintshield.agentic import registry

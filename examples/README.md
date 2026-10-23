@@ -3,11 +3,11 @@
 
 # deepintshield - examples
 
-These examples target SDK **3.2.2** and DeepIntShield Server **3.2.2**.
-Install the matching release with `pip install "deepintshield==3.2.2"`
+These examples target SDK **3.2.3** and DeepIntShield Server **3.2.3**.
+Install the matching release with `pip install "deepintshield==3.2.3"`
 and add the extras required by your example.
 
-SDK and Server 3.2.2 include Entra gateway-runtime authentication and managed
+SDK and Server 3.2.3 include Entra gateway-runtime authentication and managed
 LangGraph execution. For a complete local
 `test2.py` / `math-agent` run, follow
 [Microsoft and local gateway setup](../../deepintshield_docs/src/content/docs/enterprise/entra-local-gateway.mdx).
@@ -44,7 +44,7 @@ python examples/agentic/decorator.py
 python examples/langgraph/transparent.py
 ```
 
-Install the matching extra per example, e.g. `pip install 'deepintshield[langgraph]==3.2.2'`.
+Install the matching extra per example, e.g. `pip install 'deepintshield[langgraph]==3.2.3'`.
 
 The primary inference path is `shield.openai()` / `shield.async_openai()`, or
 `OpenAI(**shield.openai_config())` when constructing a native client yourself.

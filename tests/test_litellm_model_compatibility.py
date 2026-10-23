@@ -16,6 +16,13 @@ MODELS = [f"{provider}/new-release/deployment-model" for provider in CHAT_PROVID
 ]
 
 
+def effort(model):
+    """LiteLLM 1.106 ships Astra's catalog row, which refuses "none" locally
+    (Astra supports low to max). The other IDs are unknown to LiteLLM, so their
+    explicit effort must reach the gateway unchanged."""
+    return "low" if model == "gpt-6-astra" else "none"
+
+
 @pytest.fixture
 def litellm_wire(monkeypatch):
     monkeypatch.setenv("LITELLM_LOCAL_MODEL_COST_MAP", "True")
@@ -35,7 +42,7 @@ def assert_wire(request, model, stream, messages, original):
     assert body["messages"] == messages == original
     assert body.get("stream", False) is stream
     assert body["max_completion_tokens"] == 512
-    assert body["reasoning_effort"] == "none"
+    assert body["reasoning_effort"] == effort(model)
     assert body["provider_option"] == {"value": "unchanged"}
     assert "temperature" not in body
     assert "custom_llm_provider" not in body
@@ -57,7 +64,7 @@ def test_litellm_native_sync_preserves_gateway_provider_models(shield_factory, m
         monkeypatch.setattr(litellm_wire, "_get_sync_http_client", staticmethod(lambda: transport))
         response = shield.litellm().completion(
             model=model, messages=messages, stream=stream,
-            max_completion_tokens=512, reasoning_effort="none",
+            max_completion_tokens=512, reasoning_effort=effort(model),
             extra_body={"provider_option": {"value": "unchanged"}},
             extra_headers={"X-DeepIntShield-Agent": "reviewer"},
         )
@@ -86,7 +93,7 @@ async def test_litellm_native_async_preserves_gateway_provider_models(shield_fac
         monkeypatch.setattr(litellm_wire, "_get_async_http_client", staticmethod(lambda **kwargs: transport))
         response = await shield.litellm().acompletion(
             model=model, messages=messages, stream=stream,
-            max_completion_tokens=512, reasoning_effort="none",
+            max_completion_tokens=512, reasoning_effort=effort(model),
             extra_body={"provider_option": {"value": "unchanged"}},
             extra_headers={"X-DeepIntShield-Agent": "reviewer"},
         )

@@ -15,7 +15,11 @@ from deepintshield.agentic.integrations import strands
 @pytest.fixture
 def terminal(monkeypatch):
     executor = pytest.importorskip("strands.tools.executors._executor")
-    stages = pytest.importorskip("strands._middleware.stages")
+    try:
+        # Strands 1.62 made the middleware package public.
+        from strands.middleware import stages
+    except ImportError:
+        stages = pytest.importorskip("strands._middleware.stages")
     if not hasattr(executor, "_make_execute_tool_terminal"):
         pytest.skip("installed Strands uses the legacy executor boundary")
     original = executor._make_execute_tool_terminal
@@ -142,6 +146,46 @@ def test_native_terminal_preserves_native_tool_guard_rejection(monkeypatch, term
         asyncio.run(collect(native, ctx))
     assert invoked == []
     assert order == ["topology"]
+
+
+def test_native_terminal_keeps_tool_telemetry_options(monkeypatch, terminal):
+    """Strands 1.62 opens the tool span inside the terminal: authorization still
+    comes first, and a denied call never opens one."""
+    from opentelemetry.trace import INVALID_SPAN, NonRecordingSpan
+
+    _, ctx, invoked, order = terminal
+    factory = _background_terminal_factory()
+    if "tracer" not in inspect.signature(factory).parameters:
+        pytest.skip("installed Strands records tool telemetry outside the terminal")
+
+    class Tracer:
+        def start_tool_call_span(self, tool_use, parent_span, **kwargs):
+            order.append("span")
+            return NonRecordingSpan(INVALID_SPAN.get_span_context())
+
+        def end_tool_call_span(self, span, result, error=None):
+            order.append("span-end")
+
+    ctx.agent = SimpleNamespace(trace_attributes={})
+    ctx.tool.tool_spec = {"description": "final tool", "inputSchema": {"json": {"type": "object"}}}
+    monkeypatch.setattr(strands, "resolve", lambda *a, **k: order.append("authorize") or SimpleNamespace(obligations=[]))
+    native = factory({"native_option": True}, None, tracer=Tracer(), cycle_span=None, cycle_trace=None)
+    assert asyncio.run(collect(native, ctx))
+    assert order == ["topology", "authorize", "span", "execute", "span-end"]
+    assert invoked == [({"email": "user@example.test"}, {"caller": "test"}, {"native_option": True})]
+
+    del order[:], invoked[:]
+
+    def blocked(*args, **kwargs):
+        order.append("authorize")
+        raise GuardrailDenied(reason="blocked")
+
+    monkeypatch.setattr(strands, "resolve", blocked)
+    native = factory({}, None, tracer=Tracer(), cycle_span=None, cycle_trace=None)
+    with pytest.raises(PermissionError):
+        asyncio.run(collect(native, ctx))
+    assert order == ["topology", "authorize"]
+    assert invoked == []
 
 
 @pytest.mark.parametrize("positional", [False, True])

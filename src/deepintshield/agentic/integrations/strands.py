@@ -269,7 +269,12 @@ def _enforce_middleware_terminal() -> bool:
     """
     try:
         from strands.tools.executors import _executor
-        from strands._middleware.stages import ExecuteToolContext
+
+        try:
+            # Strands 1.62 made the middleware package public.
+            from strands.middleware.stages import ExecuteToolContext
+        except ImportError:
+            from strands._middleware.stages import ExecuteToolContext
 
         original = _executor._make_execute_tool_terminal
         if getattr(original, "_deepintshield_guarded", False):
@@ -278,6 +283,9 @@ def _enforce_middleware_terminal() -> bool:
         if tuple(signature.parameters) not in {
             ("extra_kwargs",),
             ("extra_kwargs", "preset_result", "tool_context", "tool_guard"),
+            # Strands 1.62 records the tool span inside the terminal; the
+            # three options are telemetry parents only.
+            ("extra_kwargs", "preset_result", "tool_context", "tool_guard", "tracer", "cycle_span", "cycle_trace"),
         }:
             return False
         if not {"agent", "tool", "tool_use", "invocation_state"}.issubset(

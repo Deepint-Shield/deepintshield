@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: deepintshield
-Version: 3.2.2
+Version: 3.2.3
 Summary: Unified Python SDK for routing chat, RAG, agentic tool-gating, identity, and MCP traffic through DeepintShield - drop-in across the top agentic frameworks.
 Author: DeepintShield
 License-Expression: Apache-2.0
@@ -117,7 +117,7 @@ Dynamic: license-file
 
 Unified Python SDK for DeepIntShield - one import, any provider, any agent framework.
 
-Current SDK and companion Server release: **3.2.2**. SDK and Python versions are separate: this
+Current SDK and companion Server release: **3.2.3**. SDK and Python versions are separate: this
 release supports CPython **3.10, 3.11, 3.12, 3.13, and 3.14**.
 
 The primary inference client is the native **OpenAI Python SDK**, configured
@@ -158,38 +158,38 @@ and you're done.
 
 ## Install
 
-For a reproducible installation of this release, use `python -m pip install "deepintshield==3.2.2"`.
+For a reproducible installation of this release, use `python -m pip install "deepintshield==3.2.3"`.
 Add the provider and framework extras your application needs:
 
 ```bash
-pip install deepintshield==3.2.2                     # includes native OpenAI SDK
-pip install 'deepintshield[openai]==3.2.2'           # retained compatibility extra
-pip install 'deepintshield[anthropic]==3.2.2'
-pip install 'deepintshield[anthropic-mcp]==3.2.2'    # Anthropic's maintained MCP helpers
-pip install 'deepintshield[bedrock]==3.2.2'
-pip install 'deepintshield[genai]==3.2.2'
-pip install 'deepintshield[langchain]==3.2.2'
-pip install 'deepintshield[langchain-mcp]==3.2.2'    # maintained LangChain MCP adapter
-pip install 'deepintshield[langgraph]==3.2.2'
-pip install 'deepintshield[openai-agents]==3.2.2'    # OpenAI Agents SDK
-pip install 'deepintshield[llamaindex]==3.2.2'
-pip install 'deepintshield[autogen]==3.2.2'          # AutoGen / AG2
-pip install 'deepintshield[litellm]==3.2.2'
-pip install 'deepintshield[pydanticai]==3.2.2'
-pip install 'deepintshield[temporal]==3.2.2'         # Temporal durable-agent runtime
-pip install 'deepintshield[strands]==3.2.2'          # AWS Strands integration
-pip install 'deepintshield[google-adk]==3.2.2'       # Google ADK integration
-pip install 'deepintshield[azure]==3.2.2'            # azure-identity for Entra agent identity
-pip install 'deepintshield[mcp]==3.2.2'              # official MCP Python client
-pip install 'deepintshield[dpop]==3.2.2'             # DPoP proof-of-possession for agent tokens
-pip install 'deepintshield[runtime]==3.2.2'          # durable gateway-runtime keys
-pip install 'deepintshield[runtime-aws]==3.2.2'      # AWS runtime identity plus key storage
-pip install 'deepintshield[all]==3.2.2'              # compatible aggregate; see Python support below
+pip install deepintshield==3.2.3                     # includes native OpenAI SDK
+pip install 'deepintshield[openai]==3.2.3'           # retained compatibility extra
+pip install 'deepintshield[anthropic]==3.2.3'
+pip install 'deepintshield[anthropic-mcp]==3.2.3'    # Anthropic's maintained MCP helpers
+pip install 'deepintshield[bedrock]==3.2.3'
+pip install 'deepintshield[genai]==3.2.3'
+pip install 'deepintshield[langchain]==3.2.3'
+pip install 'deepintshield[langchain-mcp]==3.2.3'    # maintained LangChain MCP adapter
+pip install 'deepintshield[langgraph]==3.2.3'
+pip install 'deepintshield[openai-agents]==3.2.3'    # OpenAI Agents SDK
+pip install 'deepintshield[llamaindex]==3.2.3'
+pip install 'deepintshield[autogen]==3.2.3'          # AutoGen / AG2
+pip install 'deepintshield[litellm]==3.2.3'
+pip install 'deepintshield[pydanticai]==3.2.3'
+pip install 'deepintshield[temporal]==3.2.3'         # Temporal durable-agent runtime
+pip install 'deepintshield[strands]==3.2.3'          # AWS Strands integration
+pip install 'deepintshield[google-adk]==3.2.3'       # Google ADK integration
+pip install 'deepintshield[azure]==3.2.3'            # azure-identity for Entra agent identity
+pip install 'deepintshield[mcp]==3.2.3'              # official MCP Python client
+pip install 'deepintshield[dpop]==3.2.3'             # DPoP proof-of-possession for agent tokens
+pip install 'deepintshield[runtime]==3.2.3'          # durable gateway-runtime keys
+pip install 'deepintshield[runtime-aws]==3.2.3'      # AWS runtime identity plus key storage
+pip install 'deepintshield[all]==3.2.3'              # compatible aggregate; see Python support below
 ```
 
 `[all]` installs a compatible set of the supported provider and framework
 integrations on Python 3.10 through 3.14. The Python minimum remains 3.10;
-installing SDK 3.2.2 does not require upgrading an existing supported Python
+installing SDK 3.2.3 does not require upgrading an existing supported Python
 environment. Python 3.9 and earlier are outside this release's support range.
 
 As of October 7, 2026, the latest stable Python is
@@ -223,13 +223,13 @@ For an existing installation, upgrade in the same Python environment that runs
 your application:
 
 ```bash
-python -m pip install --upgrade 'deepintshield[all]==3.2.2'
+python -m pip install --upgrade 'deepintshield[all]==3.2.3'
 python -m pip check
 ```
 
 The version pin makes an incompatible environment fail explicitly instead of
 letting pip select an older DeepintShield release. Chat alone needs only
-`deepintshield==3.2.2`; its native OpenAI SDK is
+`deepintshield==3.2.3`; its native OpenAI SDK is
 included.
 
 Install individual framework extras when you need their newer releases. Those
@@ -248,6 +248,22 @@ the current PydanticAI and OpenAI Agents versions require OpenAI 3. See the
 [validation report](../validation_reports/2026-09-09/openai-primary/) for exact
 installed distributions, tests and skips. Mocked gateway tests verify native
 serialization and routing; they do not establish live access to every model.
+
+## What changed in 3.2.3
+
+A correction release on 3.2.2 (23 October 2026); the public APIs are unchanged.
+
+- AWS Strands Agents 1.62 works with the automatic Strands guard again.
+  Strands 1.62.0 moved its middleware package and added telemetry options to
+  its tool terminal. 3.2.2 did not recognise that shape and, failing closed,
+  refused to build a client once `strands` was imported
+  (`governance_configuration_error`). 3.2.3 guards the 1.62 terminal the same
+  way as earlier Strands releases: authorization runs on the final tool and
+  arguments before the tool span opens. On 3.2.2 or older, pin
+  `strands-agents<1.62`.
+- Companion Server 3.2.3 changes version metadata only.
+
+See the [3.2.3 release notes](https://aidocs.deepintshield.com/changelogs/3.2.3/).
 
 ## What changed in 3.2.2
 
@@ -1354,13 +1370,13 @@ automatically when its selected profile advertises
 `runtime_auth_mode="gateway_broker"`. No local Entra helper or Entra client
 secret is required. Other profiles retain their existing authentication flow.
 
-Install SDK 3.2.2 in the Python environment that runs the application. Use the
+Install SDK 3.2.3 in the Python environment that runs the application. Use the
 appropriate runtime extra and retain the framework extras your application needs:
 
 ```bash
-python -m pip install -U 'deepintshield[runtime,langgraph]==3.2.2'       # laptop, GCP, Kubernetes
-python -m pip install -U 'deepintshield[runtime,azure,langgraph]==3.2.2' # Azure managed identity
-python -m pip install -U 'deepintshield[runtime-aws,langgraph]==3.2.2'   # AWS outbound identity
+python -m pip install -U 'deepintshield[runtime,langgraph]==3.2.3'       # laptop, GCP, Kubernetes
+python -m pip install -U 'deepintshield[runtime,azure,langgraph]==3.2.3' # Azure managed identity
+python -m pip install -U 'deepintshield[runtime-aws,langgraph]==3.2.3'   # AWS outbound identity
 ```
 
 The initial run creates a durable P-256 runtime key and requests enrollment for
@@ -1544,7 +1560,7 @@ package owns transport, protocol types, discovery, and calls; maintained
 framework adapters own their tool conversion.
 
 ```bash
-pip install 'deepintshield[mcp]==3.2.2'
+pip install 'deepintshield[mcp]==3.2.3'
 ```
 
 The 2.x line temporarily uses `mcp>=1.29,<2` because

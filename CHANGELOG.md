@@ -1,5 +1,20 @@
 # DeepIntShield Python SDK changelog
 
+## 3.2.3 - October 23, 2026
+
+- AWS Strands Agents 1.62 is governed again. Strands 1.62.0 moved its
+  middleware stages to the public `strands.middleware` package and gave the
+  tool-execution terminal three telemetry options (`tracer`, `cycle_span`,
+  `cycle_trace`). The automatic Strands guard did not recognise that shape
+  and, failing closed, made every `DeepintShield(...)` created after
+  `import strands` (and any `import strands` after the client) raise
+  `governance_configuration_error`. The guard now wraps the 1.62 terminal as
+  it wraps 1.55.1 to 1.61.1: authorization runs on the final tool and
+  arguments before Strands opens the tool span, and a denied call opens none.
+  Strands 1.55.0 to 1.61.1 behave exactly as before, and a terminal shape the
+  SDK does not know still fails closed. Applications that stay on 3.2.2 or
+  older should pin `strands-agents<1.62`.
+
 ## 3.2.2 - October 23, 2026
 
 - A LangGraph node built from Runnables (a `RunnableParallel`, a chain such

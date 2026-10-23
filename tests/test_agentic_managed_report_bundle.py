@@ -108,6 +108,8 @@ def test_an_engine_that_is_never_asked_carries_no_flag(program, monkeypatch):
 
 
 def test_with_the_flag_the_manifest_is_the_one_a_submission_builds(program):
+    # The real packager pins the script's langgraph import from installed metadata.
+    pytest.importorskip("langgraph", reason="requires the optional LangGraph integration")
     from deepintshield.agentic.registry import _wire_attested_payload
 
     engine = SimpleNamespace(virtual_key="sk-ds-managed-test", _managed_execution_report_bundle=True)
