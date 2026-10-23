@@ -7,6 +7,9 @@ OpenClaw is a Node/TypeScript runtime, so its model and local-tool boundaries
 use two small integrations. Both feed the canonical Agentic workspace; there is
 no legacy Agentic API or second policy model.
 
+Use DeepIntShield SDK and Server **3.2.0** for this configuration. Install
+`python -m pip install "deepintshield==3.2.0"` for the Python configuration helper.
+
 ## 1. Route model traffic through the gateway
 
 Generate the provider block from a Python client:
@@ -106,6 +109,6 @@ must approve the tool/action and assign the appropriate workspace role or
 permission before it can execute.
 
 `DIS_AUTHZ_TIMEOUT_MS` controls the fail-closed decision timeout (default 5000,
-bounded to 100–30000 ms). Network authorization necessarily has a decision
+bounded to 100 to 30000 ms). Network authorization necessarily has a decision
 round trip; identity resolution is warmed at startup and the server can use its
 bounded decision cache where immediate-revocation policy permits it.

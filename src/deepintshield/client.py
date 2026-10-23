@@ -7,7 +7,12 @@ from typing import Any, Iterable, Literal, Mapping, overload
 
 import httpx
 
-from .config import DEFAULT_BASE_URL, ShieldConfig, _normalize_base_url
+from .config import (
+    DEFAULT_BASE_URL,
+    ShieldConfig,
+    _normalize_base_url,
+    _normalize_registered_by,
+)
 from .errors import (
     DeepintShieldBlockedError,
     DeepintShieldError,
@@ -31,6 +36,27 @@ class DeepintShield:
     Pass ``base_url`` to target a self-hosted or staging gateway. The default
     is ``https://app.deepintshield.com``; the environment variable
     ``DEEPINTSHIELD_BASE_URL`` is honoured by ``DeepintShield.from_env()``.
+
+    ``requester`` is the acting-for (delegation) identity: it becomes the
+    ``principal``/on-behalf-of leg of every governed decision and the
+    ``x-deepintshield-requester`` attribution. ``registered_by`` is the
+    developer who files the agent registration
+    (``DEEPINTSHIELD_REGISTERED_BY`` in ``from_env()``). The gateway maps the
+    address to an identity in the workspace directory, proposes that identity
+    as the accountable owner and notifies the address. The address is not
+    verified and grants nothing: the administrator confirms the owner during
+    review. One registration keeps its first address: while it is pending, a
+    run that names a different one is refused with
+    ``registration_requester_mismatch``.
+
+    The two coincide on a laptop, so when ``registered_by`` is unset an
+    e-mail-shaped ``requester`` is sent in its place, marked as derived. That
+    is only a fallback: in production the requester is often an end user, so
+    the gateway ignores a derived address for people the organization has not
+    placed in the workspace and files the registration as if no address had
+    been sent. It never refuses a registration over one. Set
+    ``registered_by`` to name the developer, or pass ``registered_by=""`` to
+    send no registering identity at all.
     """
 
     def __init__(
@@ -44,6 +70,7 @@ class DeepintShield:
         agent_name: str = "",
         requester: str = "sdk-user",
         requester_role: str = "member",
+        registered_by: str | None = None,
         persist: bool = True,
     ) -> None:
         self.base_url = _normalize_base_url(base_url)
@@ -54,6 +81,18 @@ class DeepintShield:
         self.agent_name = agent_name
         self.requester = requester
         self.requester_role = requester_role
+        # Validated before any resource is allocated: an invalid registering
+        # e-mail is a configuration error, never a network call.
+        try:
+            self.registered_by = _normalize_registered_by(
+                registered_by, details={"setting": "registered_by"}
+            )
+        except (TypeError, ValueError) as exc:
+            raise DeepintShieldError(
+                str(exc),
+                code=ErrorCode.CONFIGURATION_ERROR,
+                details={"setting": "registered_by"},
+            ) from None
         self.persist = persist
         self._deepintshield_closed = False
         self._client = httpx.Client(timeout=timeout)
@@ -73,7 +112,7 @@ class DeepintShield:
         self._agentic = None
         self._agentic_lock = threading.Lock()
         # Install non-bypassable enforcement guards for any agent framework that
-        # is ALREADY imported (langgraph, crewai, litellm, …) so a compiled graph
+        # is ALREADY imported (langgraph, pydantic_ai, …) so a compiled graph
         # / built tool can't run ungoverned. Lazy engine ⇒ this does NOT build the
         # agentic surface; it only patches frameworks the app actually uses. Safe
         # no-op when none are present; the import guard arms supported frameworks
@@ -99,6 +138,7 @@ class DeepintShield:
             agent_name=cfg.agent_name,
             requester=cfg.requester,
             requester_role=cfg.requester_role,
+            registered_by=cfg.registered_by,
             persist=cfg.persist,
         )
 
@@ -113,6 +153,7 @@ class DeepintShield:
             agent_name=config.agent_name,
             requester=config.requester,
             requester_role=config.requester_role,
+            registered_by=config.registered_by,
             persist=config.persist,
         )
 
@@ -299,10 +340,19 @@ class DeepintShield:
 
     def _agent_token(self) -> str | None:
         """Best-effort agent identity token for transparent (L1) traffic.
-        Never raises - identity is a strengthening signal, not required."""
+        Explicit gateway broker identity is always fail closed, unless the
+        gateway marked it ``credential_optional`` (an approved agent it admits
+        on its virtual key)."""
         try:
             return self.agentic.engine.agent_token()
         except Exception:
+            info = self.agentic.engine._cred_info
+            if (
+                info
+                and info.runtime_auth_mode == "gateway_broker"
+                and getattr(info, "credential_optional", False) is not True
+            ):
+                raise
             return None
 
     # ───────────────────── transparent transport (L1) ────────────────────────
@@ -329,9 +379,8 @@ class DeepintShield:
     ) -> dict[str, str]:
         """Return just the gateway header set (VK + attribution [+ identity]).
 
-        Parity helper for the Portkey-style ``createHeaders`` ergonomic - drop
-        it into any client's ``default_headers``/``extra_headers`` and point
-        ``base_url`` at ``shield.endpoint(provider)``::
+        Use this helper with any client's ``default_headers``/``extra_headers``
+        and point ``base_url`` at ``shield.endpoint(provider)``::
 
             OpenAI(base_url=shield.endpoint("openai"),
                    api_key=shield.api_key(),
@@ -361,9 +410,6 @@ class DeepintShield:
         ``shield.bind("langgraph").model("gpt-4o-mini")``)."""
         from .frameworks import get_binder
         return get_binder(self, framework)
-
-    def crewai(self):
-        return self.bind("crewai")
 
     def openai_agents(self):
         return self.bind("openai_agents")

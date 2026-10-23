@@ -72,6 +72,10 @@ def test_catalog_lookup_reuses_static_definition_across_threads():
         ({"error_code": "INTERNAL_ERROR"}, "internal_error"),
         ({"error": "RATE-LIMIT-EXCEEDED"}, "rate_limited"),
         ({"error": {"code": "unauthorized"}}, "authentication_failed"),
+        ({"error_code": "managed_dependency_unavailable"}, "managed_dependency_unavailable"),
+        ({"error_code": "managed_python_version_unavailable"}, "managed_python_version_unavailable"),
+        ({"error": {"code": "agent_tool_scope_mismatch"}}, "agent_tool_scope_mismatch"),
+        ({"error": {"code": "agent_tool_identity_review_required"}}, "agent_tool_identity_review_required"),
     ],
 )
 def test_response_codes_are_normalized_across_gateway_payload_shapes(
@@ -230,3 +234,73 @@ def test_agentic_guidance_comes_from_central_catalog():
         "dashboard_path": definition.dashboard_path,
     }
     assert typed_details == details
+
+
+@pytest.mark.parametrize(
+    "definition",
+    [item for item in iter_error_definitions() if item.action == "Please contact your administrator."],
+    ids=lambda item: item.code,
+)
+def test_administrator_errors_render_trusted_guidance_across_sdk_surfaces(definition):
+    diagnostic = "PRIVATE provider details; open Agentic > Assets > Agents /workspace/private"
+    payload = {"error": {"code": definition.code, "message": diagnostic}}
+    sdk = DeepintShieldError.from_response(403, payload)
+    direct = DeepintShieldError(diagnostic, code=definition.code)
+    native = public_agentic_error(
+        GovernanceConfigurationError(code=definition.code, reason=diagnostic, payload=payload)
+    )
+
+    for error in (sdk, direct, native):
+        assert get_exception_error_code(error) == definition.code
+        assert str(error).endswith("Please contact your administrator.")
+        assert str(error).count("Please contact your administrator.") == 1
+        assert len(str(error)) < 220
+        for forbidden in ("PRIVATE", "Agentic >", "/workspace/", "Open ", "click ", "refresh "):
+            assert forbidden not in str(error)
+            assert forbidden not in repr(error)
+    # Existing diagnostic and machine-readable fields remain available.
+    assert sdk.message == diagnostic
+    assert sdk.payload is payload
+    assert sdk.retryable is definition.retryable
+    assert sdk.to_dict()["description"] == definition.description
+    assert public_agentic_error_details(native)["action"] == definition.action
+    restored = pickle.loads(pickle.dumps(sdk))
+    assert str(restored) == str(sdk)
+    assert restored.payload == payload
+
+
+def test_developer_errors_retain_local_remediation():
+    for code in ("agent_name_required", "credential_dependency_missing", "registry_discovery_invalid"):
+        details = public_agentic_error_details(code)
+        assert details["action"]
+        assert "contact your administrator" not in details["action"]
+    error = DeepintShieldError("supply a valid argument", code=ErrorCode.INVALID_ARGUMENT)
+    assert str(error) == "supply a valid argument"
+    assert repr(error) == "DeepintShieldError('supply a valid argument')"
+
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "agent_registration_pending",
+        "agent_runtime_enrollment_pending",
+        "registration_requester_mismatch",
+        "runtime_binding_identity_missing",
+    ],
+)
+def test_registration_codes_render_catalogue_text_never_gateway_prose(code):
+    diagnostic = "PRIVATE review link /workspace/private approve fingerprint now"
+    definition = get_error_definition(code)
+    assert definition is not None
+    assert definition.action == "Contact your administrator."
+    assert definition.description.endswith(" Contact your administrator.")
+
+    sdk = DeepintShieldError.from_response(409, {"error": {"code": code, "message": diagnostic}})
+    direct = DeepintShieldError(diagnostic, code=code)
+    native = public_agentic_error(GovernanceConfigurationError(code=code, reason=diagnostic))
+
+    for error in (sdk, direct, native):
+        assert get_exception_error_code(error) == code
+        assert str(error) == f"{code}: {definition.description}"
+        assert "PRIVATE" not in repr(error)
+        assert "approve" not in str(error)

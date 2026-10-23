@@ -1,5 +1,8 @@
 """RAG with Chat Completions. For GPT-6 Astra, use responses.py's request
 pattern with the filtered context as input; Astra tools require Responses.
+
+For private corpora, authorize document access before sending retrieved chunks.
+DeepintShield evaluates content safety; it does not grant document permissions.
 """
 
 import os

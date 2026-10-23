@@ -7,7 +7,6 @@ the unchanged framework authorization and native tool-execution boundaries.
 from __future__ import annotations
 
 import json
-import importlib
 
 import pytest
 
@@ -25,54 +24,6 @@ def assert_request(seen, model, protocol="chat"):
     assert request.headers["x-deepintshield-vk"] == "sk-ds-test"
     assert request.headers["x-deepintshield-agent"] == "deepintshield-test-agent"
     assert json.loads(request.content)["model"] == model
-
-
-def mock_crewai_clients(monkeypatch, sdk, sync, asynchronous):
-    # CrewAI constructs both native clients with the same connection options;
-    # replace only their HTTP transports, not model execution or serialization.
-    module = importlib.import_module("crewai.llms.providers.openai.completion")
-    monkeypatch.setattr(module, "OpenAI", lambda **options: sdk.OpenAI(**{**options, "http_client": sync}))
-    monkeypatch.setattr(module, "AsyncOpenAI", lambda **options: sdk.AsyncOpenAI(**{**options, "http_client": asynchronous}))
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("model", MODELS)
-async def test_crewai_native_openai_gateway(shield_factory, monkeypatch, model):
-    pytest.importorskip("crewai")
-    sdk, http = openai_backend()
-    seen = []
-
-    def handler(request):
-        seen.append(request)
-        return native_response("chat", model, False, http)
-
-    shield = shield_factory(lambda _: pytest.fail("unexpected discovery"), base_url="https://gateway.invalid")
-    with http.Client(transport=http.MockTransport(handler)) as transport:
-        async with http.AsyncClient(transport=http.MockTransport(handler)) as asynchronous:
-            mock_crewai_clients(monkeypatch, sdk, transport, asynchronous)
-            native = shield.crewai().llm(model, max_retries=0)
-            assert native.call([{"role": "user", "content": "Hi"}]) == "OK"
-    assert_request(seen, model)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("model", MODELS)
-async def test_crewai_native_async_responses_gateway(shield_factory, monkeypatch, model):
-    pytest.importorskip("crewai")
-    sdk, http = openai_backend()
-    seen = []
-
-    def handler(request):
-        seen.append(request)
-        return native_response("responses", model, False, http)
-
-    shield = shield_factory(lambda _: pytest.fail("unexpected discovery"), base_url="https://gateway.invalid")
-    with http.Client(transport=http.MockTransport(handler)) as sync:
-        async with http.AsyncClient(transport=http.MockTransport(handler)) as transport:
-            mock_crewai_clients(monkeypatch, sdk, sync, transport)
-            native = shield.crewai().llm(model, api="responses", max_retries=0)
-            assert await native.acall([{"role": "user", "content": "Hi"}]) == "OK"
-    assert_request(seen, model, "responses")
 
 
 @pytest.mark.parametrize("model", MODELS)

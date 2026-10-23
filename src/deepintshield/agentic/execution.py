@@ -1,11 +1,13 @@
 """Automatic, zero-wait workflow execution lifecycle.
 
 Framework adapters enter :func:`execution_scope` at their native ``invoke`` /
-``run`` / ``kickoff`` boundary.  The scope gives every top-level invocation a
+``run`` boundary. The scope gives every top-level invocation a
 fresh execution id, binds that id as the request-local agentic session, and
 emits start/terminal lifecycle events to the Agentic execution ledger.
 
-Authorization is still synchronous and fail-closed.  Lifecycle delivery is
+When workspace Agentic Security is enabled, authorization is synchronous and
+fail-closed. Explicit disabled runtime settings suppress lifecycle delivery as
+well as authorization and discovery. Enabled lifecycle delivery is
 metadata-only, best-effort telemetry and always runs on the existing bounded
 background executor, so an unavailable telemetry route never delays or permits
 a governed tool call.
@@ -32,6 +34,7 @@ from .errors import (
     GuardrailDenied,
     normalize_agentic_error_code,
 )
+from .runtime import security_enabled, security_scope
 
 _EXECUTION_PATH = "/api/agentic-new/executions"
 _EXECUTION_TIMEOUT_SECONDS = 3.0
@@ -103,10 +106,26 @@ def execution_scope(
     *,
     framework: str = "",
 ) -> Iterator[ExecutionFrame]:
+    """Negotiate fresh workspace security for each top-level workflow run."""
+    from .task_context import task_execution_scope
+
+    with task_execution_scope(new_execution=current_execution(engine) is None):
+        with security_scope(engine):
+            with _execution_scope(engine, target, framework=framework) as frame:
+                yield frame
+
+
+@contextmanager
+def _execution_scope(
+    engine: Any,
+    target: Any,
+    *,
+    framework: str = "",
+) -> Iterator[ExecutionFrame]:
     """Scope one native framework invocation to one execution/session.
 
     A nested native entry point (LangGraph's ``invoke`` calling ``stream``, a
-    Crew invoking another governed runnable, etc.) reuses the outer frame and
+    team invoking another governed runnable, etc.) reuses the outer frame and
     emits no duplicate lifecycle events.  An explicit
     ``with shield.agentic.run(session_id=...)`` remains authoritative: the
     framework uses that caller-supplied session rather than replacing it.
@@ -229,6 +248,9 @@ def _cached_topology(target: Any) -> Optional[dict[str, Any]]:
 
 
 def _emit_start(frame: ExecutionFrame) -> None:
+    if not security_enabled(frame.engine):
+        frame.start_delivered.set()
+        return
     if not _dispatch(_post_start, frame):
         # Do not make the terminal worker wait for a start job that was never
         # scheduled (e.g. bounded executor saturation during shutdown).
@@ -242,6 +264,8 @@ def _emit_finish(
     error_code: str = "",
     error_summary: str = "",
 ) -> None:
+    if not security_enabled(frame.engine):
+        return
     completed_at = _utc_now()
     duration_us = max(
         0, (time.monotonic_ns() - frame.started_monotonic_ns) // 1_000
@@ -371,7 +395,7 @@ def _post_event(engine: Any, payload: dict[str, Any]) -> None:
     response = engine._http.post(
         f"{engine.gateway_url}{_EXECUTION_PATH}",
         json=payload,
-        headers=engine._headers(include_agent_token=True),
+        headers=engine._headers(include_agent_token=True, path=_EXECUTION_PATH),
         timeout=_EXECUTION_TIMEOUT_SECONDS,
     )
     # Telemetry remains best effort, but reading/closing the response ensures
@@ -459,7 +483,6 @@ def _framework_name(target: Any) -> str:
     module = str(getattr(type(target), "__module__", "") or "").lower()
     for token, label in (
         ("langgraph", "langgraph"),
-        ("crewai", "crewai"),
         ("autogen", "autogen"),
         ("llama_index", "llamaindex"),
         ("pydantic_ai", "pydanticai"),

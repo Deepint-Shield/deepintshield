@@ -1,4 +1,4 @@
-"""Portkey-style header injector. Drop `create_headers()` into any SDK's
+"""Gateway header injector. Drop `create_headers()` into any SDK's
 default_headers and point base_url at the gateway route for that provider."""
 from openai import OpenAI
 

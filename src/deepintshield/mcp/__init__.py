@@ -29,7 +29,8 @@ Quick start
 
 ``Tool``, ``ContentPart``, ``MCPResult``, and the custom provider adapters are
 deprecated 2.x compatibility shims. New integrations should consume official
-MCP types and framework-native MCP adapters; the shims are removed in 3.0.
+MCP types and framework-native MCP adapters; the shims will be removed in a
+future major release.
 """
 
 from .client import MCPClient

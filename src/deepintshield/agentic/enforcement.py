@@ -1,10 +1,13 @@
-"""Non-bypassable enforcement installer for every supported framework.
+"""Workspace-controlled enforcement installer for every supported framework.
 
 The per-framework adapters gate tools *when the developer calls* ``govern()`` /
 ``guard()``. That still leaves a gap: nothing stops code from skipping that call
 and running the agent directly. ``install_all`` closes it by monkey-patching each
 framework's build/execute boundary the moment a DeepintShield client is created,
-so a tool/graph can't run ungoverned - the developer no longer has to remember.
+so the developer does not have to remember. Authenticated runtime configuration
+decides whether Agentic Security applies: lower plans and explicitly disabled
+paid workspaces run native code without security calls. An unavailable setting
+never grants that bypass, and guards remain installed for later re-enablement.
 
 Design rules every framework installer follows:
   * **Lazy, client-scoped engine** - framework objects are bound to the selected
@@ -16,7 +19,7 @@ Design rules every framework installer follows:
     imported *after* the client is built is picked up by the import watch below.
   * **Idempotent** - methods are patched once; ownership is resolved per object
     or request context, never rebound globally.
-  * **Fail-closed execution** - PDP outages, ambiguous clients, failed
+  * **Fail-closed governed execution** - PDP outages, ambiguous clients, failed
     instrumentation, and an unverified code-blueprint report all block
     execution. Build-time discovery may be detached, but a framework execution
     boundary requires its bounded report to finish successfully.
@@ -25,7 +28,7 @@ Two things live here besides the installer:
 
   * :func:`report_topology` - the single GAF-registry discovery call. Every
     framework's ``enforce`` routes through it at its natural build/first-run
-    boundary (compile / kickoff / run), so the Registry populates itself for all
+    boundary (compile / run), so the Registry populates itself for all
     of them instead of only for LangGraph.
   * :func:`report_topology_on` - patches a class method into such a boundary.
 
@@ -48,19 +51,20 @@ from importlib import import_module
 from typing import Any, Callable, Iterator
 
 from .errors import GovernanceConfigurationError, public_agentic_boundary
+from .runtime import security_enabled
 
 # top-level import name → enforcement integration module (relative to this package)
 _FRAMEWORKS: list[tuple[str, str]] = [
     ("langgraph", ".integrations.langgraph"),
     ("langchain_core", ".integrations.langchain"),
-    ("crewai", ".integrations.crewai"),
     ("llama_index", ".integrations.llamaindex"),
     ("autogen", ".integrations.autogen"),
     ("autogen_core", ".integrations.autogen"),
     ("autogen_agentchat", ".integrations.autogen"),
     ("pydantic_ai", ".integrations.pydanticai"),
     ("agents", ".integrations.openai_agents"),  # `openai-agents` imports as `agents`
-    ("litellm", ".integrations.litellm"),
+    # LiteLLM is a provider client: completions do not execute agent tools.
+    # Framework/tool guards surround real actions; inference uses gateway policy.
     ("strands", ".integrations.strands"),
     ("google.adk", ".integrations.google_adk"),
     ("temporalio", ".integrations.temporal"),
@@ -124,7 +128,7 @@ def engine_scope(engine: Any) -> Iterator[Any]:
 def bind_engine(obj: Any, engine: Any, *, recursive: bool = False) -> bool:
     """Attach an engine to a framework object without a global provider.
 
-    ``recursive=True`` also binds common agent/tool containers so a Crew/Agent
+    ``recursive=True`` also binds common agent/tool containers so a team/agent
     selected at its run boundary passes the same tenant/VK to its tool calls.
     """
     if obj is None or engine is None:
@@ -318,8 +322,8 @@ def _watch_imports() -> bool:
 
     ``install_all`` can only patch what is already in ``sys.modules``, so::
 
-        shield = DeepintShield(virtual_key=…)   # crewai not imported yet
-        import crewai                            # → previously ungoverned
+        shield = DeepintShield(virtual_key=…)   # langgraph not imported yet
+        import langgraph                       # → previously ungoverned
 
     left the framework unguarded and its topology unreported. We wrap
     ``builtins.__import__`` (the standard post-import-hook technique) so the
@@ -400,7 +404,7 @@ _bg_inflight = 0
 def run_detached(fn: Callable[..., Any], *args: Any, name: str = "deepintshield-governance") -> bool:
     """Run best-effort governance work off the caller's thread.
 
-    The build boundary we hook (``compile()`` / ``kickoff()``) belongs to the
+    The build boundary we hook (``compile()`` / ``run()``) belongs to the
     developer, so *nothing* optional may be paid for on it. Blueprint
     registration in particular used to run inline on the shared httpx client and
     inherit its 30s request timeout - a blackhole gateway froze ``compile()`` for
@@ -453,7 +457,7 @@ def report_topology(
     The single discovery entry point shared by every framework's ``enforce``.
     It used to live inline in the LangGraph compile guard, which is why only
     LangGraph ever populated Registry → Agents | Tools | Networks; hoisting it
-    here lets CrewAI / AutoGen / LlamaIndex / PydanticAI / OpenAI-Agents report
+    here lets AutoGen / LlamaIndex / PydanticAI / OpenAI-Agents report
     at their own build boundary with three lines each.
 
     Build-time discovery stays off the invocation path. Execution-time
@@ -471,6 +475,8 @@ def report_topology(
         if required:
             raise GovernanceConfigurationError(code="blueprint_scan_unavailable") from None
         return False
+    if not security_enabled(engine):
+        return True
     try:
         from .execution import cache_topology
         from .registry import describe_network, discover
@@ -490,7 +496,9 @@ def report_topology(
                     if raw_code and not raw_code.startswith("registry_discovery_")
                     else "blueprint_scan_unavailable"
                 )
-                raise GovernanceConfigurationError(code=code) from None
+                raise GovernanceConfigurationError(
+                    code=code, payload=_registration_payload(engine, result),
+                ) from None
             return False
         return bool(result.get("dispatched") or result.get("deduped") or sync)
     except GovernanceConfigurationError:
@@ -499,6 +507,29 @@ def report_topology(
         if required:
             raise GovernanceConfigurationError(code="blueprint_scan_unavailable") from None
         return False
+
+
+def _registration_payload(engine: Any, result: Any) -> dict[str, Any]:
+    """Private payload for a lifecycle code raised from a required report.
+
+    Carries the 202 ``registration`` object and the engine's validated
+    ``registration_context`` (reference, runtime-key thumbprint, and the
+    notification e-mail the gateway confirmed) so the public boundary can
+    render the developer's pending line. Never rendered directly; harmless
+    for non-registration codes.
+    """
+    body = result if isinstance(result, dict) else {}
+    registration = body.get("registration")
+    payload: dict[str, Any] = {
+        "registration": dict(registration) if isinstance(registration, dict) else {},
+    }
+    resolver = getattr(engine, "_registration_context", None)
+    if callable(resolver):
+        try:
+            payload["registration_context"] = resolver(body)
+        except Exception:
+            pass
+    return payload
 
 
 def ensure_topology_reported(
@@ -511,14 +542,16 @@ def ensure_topology_reported(
     """Synchronously attest a changed blueprint and locally skip an unchanged one.
 
     Source expansion is cached against a bounded bytecode/dependency token by
-    :mod:`registry`, so this check performs no HTTP request—and normally no file
-    read—when the live callables are unchanged. The marker is written only after
+    :mod:`registry`, so this check performs no HTTP request, and normally no file
+    read, when the live callables are unchanged. The marker is written only after
     a durable discovery acknowledgement.
     """
     if obj is None or engine is None:
         if required:
             raise GovernanceConfigurationError(code="blueprint_scan_unavailable") from None
         return False
+    if not security_enabled(engine):
+        return True
     try:
         from .registry import describe_network
 
@@ -560,7 +593,7 @@ def report_topology_on(
     cls: Any,
     attrs: tuple[str, ...],
 ) -> bool:
-    """Patch ``cls.attr`` (a run/kickoff-style method) so the receiver's topology
+    """Patch ``cls.attr`` (an execution method) so the receiver's topology
     is reported to the registry the first time it executes.
 
     This is the discovery twin of ``_common.install_method_guard``: it never
@@ -649,8 +682,8 @@ def report_topology_for(
     """Resolve ``(module, class, methods)`` candidates and install the topology
     report on the first ones that exist.
 
-    Frameworks move their orchestration class between releases (CrewAI's
-    ``Crew``, AutoGen's team base, LlamaIndex's agent runner), so each adapter
+    Frameworks move their orchestration class between releases (AutoGen's
+    team base, LlamaIndex's agent runner), so each adapter
     passes every shape it knows about and this walks them. A candidate whose
     module/class is missing is skipped silently - importing here never forces a
     dependency, because the framework is already loaded by the time

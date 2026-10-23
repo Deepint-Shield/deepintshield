@@ -1,0 +1,3 @@
+include CHANGELOG.md
+recursive-include examples *.py *.md *.ts *.json *.png *.pdf
+recursive-include tests/fixtures *.sse

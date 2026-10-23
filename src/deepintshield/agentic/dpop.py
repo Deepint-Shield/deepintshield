@@ -42,17 +42,23 @@ def _b64url(raw: bytes) -> str:
 class DPoPKey:
     """An ephemeral P-256 signing key and the proofs it produces.
 
-    P-256/ES256 because it is the one algorithm every DPoP implementation is
-    required to support, so a proof from here verifies anywhere.
+    Issuer discovery must advertise ES256 before requesting a bound token.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, private_key=None) -> None:
         if not _CRYPTOGRAPHY_AVAILABLE:
             raise RuntimeError(
                 "DPoP proof-of-possession requires the 'cryptography' package; "
                 "install it or leave proof-of-possession disabled"
             )
-        self._key = ec.generate_private_key(ec.SECP256R1())
+        if private_key is not None and (
+            not isinstance(private_key, ec.EllipticCurvePrivateKey)
+            or not isinstance(private_key.curve, ec.SECP256R1)
+        ):
+            raise ValueError("DPoP requires a P-256 private key")
+        # Existing issuer credentials keep using an ephemeral process key.
+        # Gateway runtime credentials explicitly supply their enrolled key.
+        self._key = private_key or ec.generate_private_key(ec.SECP256R1())
         numbers = self._key.public_key().public_numbers()
         # A JWK's thumbprint is computed over its members in lexicographic
         # order with no whitespace (RFC 7638). Building the dict in that order
@@ -67,7 +73,10 @@ class DPoPKey:
         canonical = json.dumps(self.public_jwk, separators=(",", ":"), sort_keys=True)
         self.thumbprint = _b64url(hashlib.sha256(canonical.encode("utf-8")).digest())
 
-    def proof(self, method: str, uri: str) -> str:
+    def proof(
+        self, method: str, uri: str, access_token: Optional[str] = None,
+        *, nonce: Optional[str] = None,
+    ) -> str:
         """Return a compact JWS proof binding this key to one request.
 
         ``htu`` deliberately excludes query and fragment, as the RFC requires -
@@ -78,10 +87,18 @@ class DPoPKey:
         target = str(uri or "").split("?", 1)[0].split("#", 1)[0]
         payload = {
             "jti": uuid.uuid4().hex,
-            "htm": str(method or "").upper(),
+            "htm": str(method or ""),
             "htu": target,
             "iat": int(time.time()),
         }
+        if access_token is not None:
+            # Hash the exact token sent in X-Agent-Token, never the virtual key
+            # or a decoded/re-serialized JWT (RFC 9449 section 4.2).
+            payload["ath"] = _b64url(
+                hashlib.sha256(access_token.encode("ascii")).digest()
+            )
+        if nonce is not None:
+            payload["nonce"] = nonce
         signing_input = (
             _b64url(json.dumps(header, separators=(",", ":")).encode("utf-8"))
             + "."
@@ -116,13 +133,15 @@ def process_dpop_key() -> Optional[DPoPKey]:
         return _process_key
 
 
-def dpop_headers(method: str, uri: str) -> dict[str, str]:
+def dpop_headers(
+    method: str, uri: str, access_token: Optional[str] = None
+) -> dict[str, str]:
     """Headers carrying a fresh proof, or {} when proofs are unavailable."""
     key = process_dpop_key()
     if key is None:
         return {}
     try:
-        return {"DPoP": key.proof(method, uri)}
+        return {"DPoP": key.proof(method, uri, access_token=access_token)}
     except Exception:
         # A proof that cannot be built must not break the call: the request
         # proceeds as a bearer and the gateway decides whether that is

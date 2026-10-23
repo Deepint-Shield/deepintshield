@@ -49,9 +49,17 @@ def test_bind_unknown_framework_raises():
         shield.bind("not-a-framework")
 
 
+def test_removed_framework_has_no_binder_or_public_accessor():
+    with DeepintShield(virtual_key="sk-ds-x") as shield:
+        assert not hasattr(shield, "crewai")
+        assert not hasattr(shield.agentic, "crewai")
+        with pytest.raises(ValueError):
+            shield.bind("crewai")
+
+
 def test_framework_binder_accessors():
     shield = DeepintShield(virtual_key="sk-ds-x")
-    for name in ("crewai", "openai_agents", "llamaindex", "autogen"):
+    for name in ("openai_agents", "llamaindex", "autogen"):
         binder = getattr(shield, name)()
         assert name.split("_")[0] in repr(binder).lower()
 

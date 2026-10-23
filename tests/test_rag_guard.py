@@ -13,12 +13,12 @@ class _Doc:
 
 class _Retriever:
     def invoke(self, query: str):
-        return [_Doc("authorised", "0"), _Doc("blocked", "1")]
+        return [_Doc("safe content", "0"), _Doc("blocked", "1")]
 
 
 def _handler(request: httpx.Request) -> httpx.Response:
     if request.url.path.endswith("/api/rag-security/evaluate"):
-        # Gateway authorises only chunk "0".
+        # The gateway safety policy permits only chunk "0".
         return httpx.Response(
             200,
             json={"result": {"trace": {"retrieved_chunks": [{"chunk_id": "0"}]}}},
@@ -26,12 +26,12 @@ def _handler(request: httpx.Request) -> httpx.Response:
     return httpx.Response(404, json={})
 
 
-def test_guard_retriever_drops_unauthorised_chunks(shield_factory):
+def test_guard_retriever_drops_policy_rejected_chunks(shield_factory):
     shield = shield_factory(_handler)
     retriever = shield.rag.guard_retriever(_Retriever())
     out = retriever.invoke("what is the Q2 ledger?")
     assert len(out) == 1
-    assert out[0].page_content == "authorised"
+    assert out[0].page_content == "safe content"
 
 
 def test_guard_retriever_is_idempotent(shield_factory):

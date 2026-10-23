@@ -189,9 +189,7 @@ def test_default_min_prefix_tokens_matches_gemini_threshold():
 
 
 def test_genai_cached_provider_returns_wrapped_client():
-    importlib_util = pytest.importorskip("importlib.util")
-    if importlib_util.find_spec("google.genai") is None:
-        pytest.skip("google-genai is not installed")
+    pytest.importorskip("google.genai", reason="google-genai is not installed")
     from deepintshield import DeepintShield
 
     shield = DeepintShield(virtual_key="sk-ds-1")
@@ -204,9 +202,7 @@ def test_genai_cached_provider_returns_wrapped_client():
 
 
 def test_genai_plain_provider_still_returns_native_client():
-    importlib_util = pytest.importorskip("importlib.util")
-    if importlib_util.find_spec("google.genai") is None:
-        pytest.skip("google-genai is not installed")
+    pytest.importorskip("google.genai", reason="google-genai is not installed")
     from google.genai import Client as GenaiClient
     from deepintshield import DeepintShield
 

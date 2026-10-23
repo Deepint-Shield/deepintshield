@@ -50,6 +50,7 @@ from .errors import (
 from .identity import PrincipalBinding, local_subject, resolve_principal
 from .registry import describe_network, discover
 from .surface import AgenticSurface
+from .task_context import TaskContext, TaskMemoryReference, current_task_context, memory_reference, task_scope
 from .types import (
     ContextBag,
     Decision,
@@ -61,6 +62,11 @@ from .types import (
 
 __all__ = [
     "AgenticSurface",
+    "TaskContext",
+    "TaskMemoryReference",
+    "current_task_context",
+    "memory_reference",
+    "task_scope",
     "AgenticEngine",
     "ExecutionFrame",
     "execution_scope",

@@ -245,24 +245,23 @@ def test_shared_framework_boundary_preserves_explicit_run_id(shield_factory):
     recorder = LifecycleRecorder()
     shield = shield_factory(recorder.handler)
 
-    @shield.agentic.tool("crew_task")
-    def crew_task() -> str:
+    @shield.agentic.tool("workflow_task")
+    def workflow_task() -> str:
         return shield.agentic.engine.session_id
 
-    class Crew:
+    class Workflow:
         def __init__(self) -> None:
-            self.agents = []
-            self.tasks = []
+            self.tools = []
 
-        def kickoff(self) -> str:
-            return crew_task()
+        def invoke(self) -> str:
+            return workflow_task()
 
-    assert enforcement.report_topology_on(Crew, ("kickoff",))
-    crew = Crew()
-    enforcement.bind_engine(crew, shield.agentic.engine, recursive=True)
+    assert enforcement.report_topology_on(Workflow, ("invoke",))
+    workflow = Workflow()
+    enforcement.bind_engine(workflow, shield.agentic.engine, recursive=True)
 
     with shield.agentic.run(session_id="caller-run-42"):
-        assert crew.kickoff() == "caller-run-42"
+        assert workflow.invoke() == "caller-run-42"
 
     events = recorder.wait_for_events(2)
     assert [event["execution_id"] for event in events] == [

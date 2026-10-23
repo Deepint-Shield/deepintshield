@@ -10,7 +10,7 @@ else - durability, retries, replay and event-history audit - stays native
 Temporal. Point the model activity's OpenAI client at ``shield.openai()`` to add
 cache/guardrails/cost on the LLM leg.
 
-    pip install 'deepintshield[temporal]'   # temporalio
+    pip install 'deepintshield[temporal]==3.2.0'   # temporalio
 """
 import asyncio
 

@@ -135,14 +135,19 @@ def _evidence(value: object) -> dict[str, object]:
     approval_id = ""
 
     for container in _candidate_containers(value):
-        if not response_code and mcp_code is None:
+        if not response_code or mcp_code is None:
             for key in ("code", "error_code", "response_code"):
                 candidate = _read_field(container, key)
                 if candidate is _MISSING:
                     continue
-                response_code = _safe_response_code(candidate)
-                mcp_code = _safe_mcp_code(candidate)
-                if response_code or mcp_code is not None:
+                if not response_code:
+                    response_code = _safe_response_code(candidate)
+                if mcp_code is None:
+                    mcp_code = _safe_mcp_code(candidate)
+                # A JSON-RPC numeric code and an application code in its
+                # own data envelope are complementary evidence. Neither
+                # should hide the other; separate sources retain priority.
+                if response_code and mcp_code is not None:
                     break
         if not decision_id:
             decision_id = _safe_identifier(_read_field(container, "decision_id"))
@@ -357,6 +362,18 @@ def mcp_error_from_exception(
             selected_code = None
         else:
             selected_details = _merge_evidence(_exception_sources(error))
+            # Nested native methods may cross this boundary again. Preserve
+            # bounded evidence already encoded in SDK details; its numeric
+            # JSON-RPC code is diagnostic, separate from the catalogue code.
+            original_details = _read_field(error, "details")
+            mcp_code = _safe_mcp_code(_read_field(original_details, "mcp_code"))
+            if mcp_code is not None:
+                selected_details["mcp_code"] = mcp_code
+            response_code = _safe_response_code(
+                _read_field(original_details, "response_code")
+            )
+            if response_code:
+                selected_details["response_code"] = response_code
 
     # An exact canonical boundary code outranks generic transport siblings.
     if selected_code is None:
@@ -398,6 +415,11 @@ def mcp_error_from_exception(
     if safe_operation:
         safe_details["operation"] = safe_operation
     upstream_type = _safe_label(type(selected_node).__name__, default="Exception")
+    if isinstance(error, DeepintShieldError):
+        upstream_type = _safe_label(
+            _read_field(_read_field(error, "details"), "upstream_type"),
+            default=upstream_type,
+        )
     safe_details["upstream_type"] = upstream_type
     for key in ("mcp_code", "response_code", "decision_id", "approval_id"):
         if key in selected_details:

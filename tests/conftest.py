@@ -22,9 +22,22 @@ def shield_factory(mock_transport):
 
     def make(
         handler: Callable[[httpx.Request], httpx.Response],
+        runtime_config_handler: Callable[[httpx.Request], httpx.Response] | None = None,
         **client_kwargs: Any,
     ) -> DeepintShield:
         def with_blueprint_ack(request: httpx.Request) -> httpx.Response:
+            if request.url.path.endswith("/agentic-new/managed-execution/capabilities"):
+                # Focused legacy/PDP fixtures do not opt into managed workers.
+                # Managed execution tests exercise their own transport.
+                return httpx.Response(404)
+            if request.url.path.endswith("/agentic-new/runtime-config"):
+                # Existing focused fixtures model gateways predating runtime
+                # configuration. Explicit contract tests supply this endpoint.
+                return (
+                    runtime_config_handler(request)
+                    if runtime_config_handler is not None
+                    else httpx.Response(404)
+                )
             response = handler(request)
             # Current Agentic execution requires a durable discovery/blueprint
             # acknowledgement before a callable can run. Most focused PDP

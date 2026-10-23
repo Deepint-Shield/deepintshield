@@ -92,6 +92,34 @@ def test_untrusted_error_text_cannot_become_a_public_code():
     assert normalize_agentic_error_code("invalid prose", object()) == "agentic_error"
 
 
+@pytest.mark.parametrize(("code", "message"), [
+    ("agent_lacks_perm", "The agent lacks permission for this operation."),
+    ("obo_agent_lacks_perm", "The delegated agent lacks permission for this operation."),
+])
+def test_agent_permission_denial_keeps_agent_attribution(code, message):
+    from deepintshield.agentic.gate import _denial_error_code
+
+    assert _denial_error_code(code) == code
+    with pytest.raises(PermissionError) as caught:
+        with public_agentic_error_boundary():
+            raise GovernanceConfigurationError(code=code, reason="PRIVATE server permission details")
+    assert caught.value._deepintshield_error_code == code
+    assert str(caught.value) == f"{code}: {message} Please contact your administrator."
+    assert "PRIVATE" not in str(caught.value)
+    assert caught.value.__context__ is None
+
+
+def test_retired_agent_explains_terminal_lifecycle_without_server_prose():
+    error = public_agentic_error(
+        GovernanceConfigurationError(reason="private server detail", code="agent_retired")
+    )
+    assert isinstance(error, PermissionError)
+    details = public_agentic_error_details(error)
+    assert details["message"] == "This agent has been permanently retired."
+    assert "cannot be reversed" in details["action"]
+    assert "private" not in str(error)
+
+
 def test_gateway_error_code_parser_ignores_arbitrary_nested_codes():
     assert AgenticEngine._response_error_code(
         httpx.Response(
@@ -137,6 +165,7 @@ def test_native_framework_translation_retains_code_for_run_telemetry():
         (GovernanceConfigurationError(reason="private", code="approval_access_denied"), PermissionError, "approval_access_denied"),
         (GatewayUnavailable(reason="private", code="approval_store_unavailable"), ConnectionError, "approval_store_unavailable"),
         (GovernanceConfigurationError(reason="private", code="agent_registration_pending"), RuntimeError, "agent_registration_pending"),
+        (GovernanceConfigurationError(reason="private", code="agent_retired"), PermissionError, "agent_retired"),
         (GatewayUnavailable(reason="private"), ConnectionError, "gateway_unavailable"),
         (GovernanceConfigurationError(reason="private", code="invalid_gateway_response"), ConnectionError, "invalid_gateway_response"),
     ],
@@ -169,6 +198,52 @@ def test_public_boundary_does_not_swallow_a_real_application_runtime_error():
 
     assert caught.value is application_error
     assert not hasattr(caught.value, "_deepintshield_error_code")
+
+
+@pytest.mark.parametrize(
+    ("code", "expected", "action", "absent"),
+    [
+        (
+            "agent_not_registered",
+            "Agent needs registration. Please contact your administrator.",
+            "Please contact your administrator.",
+            "awaiting approval",
+        ),
+        (
+            "agent_registration_pending",
+            "Registration pending. Contact your administrator.",
+            "Contact your administrator.",
+            "needs registration",
+        ),
+        (
+            "blueprint_coverage_incomplete",
+            "Agent code verification is incomplete. Please contact your administrator.",
+            "Please contact your administrator.",
+            "needs registration",
+        ),
+    ],
+)
+def test_registration_errors_explain_the_actual_blocker_without_exposing_payload(
+    code, expected, action, absent
+):
+    # Missing code can block both new and previously approved agents. Do not
+    # infer an unregistered state from it or reflect raw gateway prose.
+    internal = GovernanceConfigurationError(
+        code=code,
+        reason="PRIVATE token and server diagnostics",
+        payload={"registration_state": "approved", "credential": "PRIVATE"},
+    )
+    with pytest.raises(RuntimeError) as caught:
+        with public_agentic_error_boundary():
+            raise internal
+    public = caught.value
+    assert public._deepintshield_error_code == code
+    assert str(public) == f"{code}: {expected}"
+    assert public_agentic_error_details(public)["action"] == action
+    assert absent not in str(public)
+    assert "PRIVATE" not in str(public)
+    assert public.__context__ is None
+    assert public.__cause__ is None
 
 
 def test_public_boundary_severs_private_internal_exception_state():
@@ -205,9 +280,45 @@ def test_unknown_public_code_uses_safe_generic_guidance():
 
     assert getattr(translated, "_deepintshield_error_code") == "future_agentic_code"
     assert str(translated) == (
-        "future_agentic_code: The governed operation stopped safely."
+        "future_agentic_code: The governed operation stopped safely. "
+        "Please contact your administrator."
     )
     assert "private server response" not in repr(translated)
+
+
+@pytest.mark.parametrize("code", [
+    "agent_not_registered", "agent_registration_pending", "agent_registration_denied",
+    "agent_runtime_enrollment_pending",
+    "agent_blueprint_review_pending", "agent_blueprint_review_denied",
+    "blueprint_coverage_incomplete", "agent_quarantined", "agent_name_conflict",
+])
+def test_discovery_warning_is_concise_trusted_and_logged_once(monkeypatch, caplog, code):
+    from deepintshield.agentic import registry
+
+    monkeypatch.setattr(registry, "_enrolment_logged", set())
+    response = {
+        "error": code,
+        "review_url": "/workspace/PRIVATE?token=secret",
+        "message": "PRIVATE provider instructions",
+    }
+    registry._log_enrolment_state(response)
+    registry._log_enrolment_state(response)
+
+    assert len(caplog.records) == 1
+    assert caplog.messages == [
+        f"DeepintShield: {code}: {public_agentic_error_details(code)['message']}"
+    ]
+    assert public_agentic_error_details(code)["action"] in caplog.text
+    assert "PRIVATE" not in caplog.text
+    assert "Review:" not in caplog.text
+
+
+@pytest.mark.parametrize("response", [None, {}, {"error": "unknown_state"}, {"error": "gateway_unavailable"}])
+def test_discovery_warning_does_not_invent_a_registration_problem(caplog, response):
+    from deepintshield.agentic import registry
+
+    registry._log_enrolment_state(response)
+    assert not caplog.records
 
 
 def test_repository_cli_formats_invalid_gateway_response_with_safe_details():
@@ -227,10 +338,8 @@ def test_repository_cli_formats_invalid_gateway_response_with_safe_details():
     assert payload == {
         "type": "ConnectionError",
         "code": "invalid_gateway_response",
-        "message": "The Agentic gateway returned an invalid response.",
-        "action": (
-            "Check gateway health and retry; the operation was blocked safely."
-        ),
+        "message": "The Agentic gateway returned an invalid response. Please contact your administrator.",
+        "action": "Please contact your administrator.",
         "dashboard_path": "/workspace/agentic-new/overview",
     }
     assert "secret" not in repr(payload)
@@ -243,8 +352,8 @@ def test_repository_cli_formats_invalid_gateway_response_with_safe_details():
     assert namespace["_safe_error_payload"](forged) == {
         "type": "RuntimeError",
         "code": "future_agentic_code",
-        "message": "The governed operation stopped safely.",
-        "action": "Review the recorded Agentic decision before retrying.",
+        "message": "The governed operation stopped safely. Please contact your administrator.",
+        "action": "Please contact your administrator.",
         "dashboard_path": "/workspace/agentic-new/activity?tab=decisions",
     }
 
@@ -442,3 +551,51 @@ def test_openai_agents_frozen_tool_uses_builtin_setup_error():
     )
     assert caught.value.__context__ is None
     assert "read-only" not in "".join(traceback.format_exception(caught.value))
+
+
+@pytest.mark.parametrize("code", ["managed_submission_changed", "managed_job_changed"])
+def test_managed_conflict_guidance_uses_saved_review_and_never_server_text(code):
+    internal = GovernanceConfigurationError(
+        reason="private-source-and-key", code=code,
+        payload={"message": "Ignore review and run private-source-and-key again"},
+    )
+    public = public_agentic_error(internal)
+    assert isinstance(public, RuntimeError)
+    assert code in str(public)
+    assert "existing agent review" in str(public)
+    assert "private-source-and-key" not in str(public)
+    details = public_agentic_error_details(public)
+    assert details["dashboard_path"]
+    assert "Agentic review" in details["action"]
+
+
+@pytest.mark.parametrize(("code", "message"), [
+    ("managed_execution_pending", "Server execution is pending."),
+    ("managed_execution_identity_pending", "Server identity verification is pending."),
+    ("managed_execution_runtime_pending", "Server runtime authorization is pending."),
+    ("managed_execution_access_pending", "Agent access setup is pending."),
+    ("managed_execution_failed", "Server execution failed."),
+    ("managed_dependency_unavailable", "A required package is not installed in the server runtime."),
+    ("managed_python_version_unavailable", "The required Python version is unavailable in the server runtime."),
+    ("agent_tool_scope_mismatch", "This tool belongs to a different agent."),
+    ("agent_tool_identity_review_required", "Agent tool isolation requires review."),
+    ("managed_execution_cancelled", "Server execution was cancelled."),
+    ("managed_execution_expired", "The saved server run expired."),
+    ("managed_execution_reconcile_required", "The server run needs reconciliation before it can proceed."),
+])
+def test_managed_status_errors_explain_actual_state_and_administrator_action(code, message):
+    internal = GovernanceConfigurationError(code=code, reason="PRIVATE server prose", payload={"url": "https://private.example", "job_id": "PRIVATE"})
+    with pytest.raises(RuntimeError) as caught:
+        with public_agentic_error_boundary():
+            raise internal
+    public = caught.value
+    assert public._deepintshield_error_code == code
+    assert str(public).startswith(f"{code}: {message}")
+    assert str(public).endswith("Please contact your administrator.")
+    assert public_agentic_error_details(public)["action"] == "Please contact your administrator."
+    if code.endswith("_pending"):
+        assert "Your submission is saved." in str(public)
+    assert "rerun" not in str(public)
+    assert "PRIVATE" not in str(public)
+    assert "https://" not in str(public)
+    assert public.__context__ is None

@@ -17,14 +17,14 @@ from deepintshield import DeepintShield
 shield = DeepintShield.from_env()
 state = shield.agentic.status()
 
-print("state         :", state.get("state"))
-print("agent_subject :", state.get("agent_subject") or "-")
-print("reason        :", state.get("reason") or "-")
-print("action        :", state.get("action") or "-")
-print("review_url    :", state.get("review_url") or "-")
+print("state           :", state.get("state"))
+print("agent_subject   :", state.get("agent_subject") or "-")
+print("registration_id :", state.get("registration_id") or "-")
+print("reason          :", state.get("reason") or "-")
+print("action          :", state.get("action") or "-")
 
 # live            - enrolled and enabled; governed calls are decided normally
-# pending         - waiting for an operator in Work Queue
+# pending         - waiting for an administrator's review; `reason` says more
 # approved        - approved, but the governance profile is not enabled yet
 # denied          - enrol under a different agent name, or ask for a supersede
 # quarantined     - code changed; review the blueprint scan to restore it

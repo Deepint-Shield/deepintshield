@@ -302,7 +302,7 @@ def _post_resolve(
         resp = engine._http.post(
             f"{engine.gateway_url}{_RESOLVE_PATH}",
             json=payload,
-            headers=engine._headers(include_agent_token=True),
+            headers=engine._headers(include_agent_token=True, path=_RESOLVE_PATH),
             timeout=_TIMEOUT_SECONDS,
         )
         if resp.status_code >= 300:

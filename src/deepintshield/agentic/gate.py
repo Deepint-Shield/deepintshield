@@ -17,6 +17,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from .errors import (
+    _REGISTRATION_MESSAGE_CODES,
     AGENT_ACCESS_DENIED,
     AGENT_APPROVAL_PENDING,
     GovernanceConfigurationError,
@@ -26,6 +27,7 @@ from .errors import (
 )
 from .identity import obo_actor_chain
 from .obligations import apply_obligations, apply_obligations_to_call, digest
+from .runtime import passthrough_decision, security_enabled
 from .types import ContextBag, Decision, DelegationContext, Verdict
 
 if TYPE_CHECKING:
@@ -34,6 +36,8 @@ if TYPE_CHECKING:
 
 _DENIAL_ERROR_CODES = frozenset(
     {
+        "agent_lacks_perm",
+        "obo_agent_lacks_perm",
         "obo_delegation_required",
         "obo_no_acts_for",
         "obo_user_mismatch",
@@ -41,6 +45,8 @@ _DENIAL_ERROR_CODES = frozenset(
         "obo_user_lacks_perm",
         "obo_tool_not_allowed",
         "obo_action_not_allowed",
+        "agent_tool_scope_mismatch",
+        "agent_tool_identity_review_required",
         "context_deny",
         "authz_engine_error",
         "no_store",
@@ -61,22 +67,40 @@ def preflight(
     """Durably attest code before execution telemetry or credential lookup."""
     from .registry import ensure_registration_capture
 
+    if not security_enabled(engine):
+        return
     if not ensure_registration_capture(
         engine,
         tool_name,
         tool_callable=tool_callable,
     ):
-        capture_code = normalize_agentic_error_code(
+        preserved_code = normalize_agentic_error_code(
             getattr(engine, "_registration_capture_error_code", ""),
             "",
         )
+        capture_code = preserved_code
         if capture_code not in {
             "agent_registration_quota_exceeded",
             "agent_name_required",
             "blueprint_coverage_incomplete",
+            # The agent is already being registered under a different
+            # e-mail. That is the developer's actual blocker on every
+            # framework path, not a scan outage, so it keeps its own code.
+            "registration_requester_mismatch",
         }:
             capture_code = "blueprint_scan_unavailable"
-        raise GovernanceConfigurationError(code=capture_code) from None
+        error = GovernanceConfigurationError(code=capture_code)
+        if preserved_code in _REGISTRATION_MESSAGE_CODES:
+            # The capture stopped on a registration outcome the registry
+            # preserved. Carry the reference the engine remembers so the
+            # public text can cite it.
+            resolver = getattr(engine, "_registration_context", None)
+            if callable(resolver):
+                try:
+                    error.payload["registration_context"] = resolver()
+                except Exception:
+                    pass
+        raise error from None
 
 
 def resolve(
@@ -104,6 +128,8 @@ def resolve(
     shape it has. Raises :class:`GuardrailDenied` on DENY / denied approval
     and :class:`GuardrailApprovalPending` on approval timeout.
     """
+    if not security_enabled(engine):
+        return passthrough_decision()
     # Idempotent O(1)/local check when the caller already ran preflight before
     # entering its execution scope; direct adapter calls remain protected too.
     preflight(engine, tool_name, tool_callable)
@@ -134,6 +160,14 @@ def resolve(
         prompt=prompt,
     )
     decision = engine.decide(dc)
+    if decision.gaf_checked and decision.verdict == Verdict.REQUIRE_APPROVAL:
+        from .managed_execution import wait_for_worker_approval
+
+        decision = wait_for_worker_approval(engine, dc, decision)
+        # Callers may share mutable argument objects with other threads. An
+        # approval for the original digest cannot authorize changed operands.
+        if digest(args, kwargs) != dc.args_digest:
+            raise GuardrailDenied(reason="arguments changed while awaiting approval", tool=tool_name, code=AGENT_ACCESS_DENIED)
 
     if decision.verdict == Verdict.DENY:
         raise GuardrailDenied(

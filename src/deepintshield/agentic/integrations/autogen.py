@@ -99,6 +99,8 @@ def executable_callbacks(owner: Any, *, prefix: str = "autogen") -> CallbackInve
         except Exception:
             incomplete = True
             continue
+        if isinstance(handoffs, dict):
+            handoffs = list(handoffs.values())
         if handoffs is not None and not isinstance(handoffs, (list, tuple)):
             incomplete = True
             continue

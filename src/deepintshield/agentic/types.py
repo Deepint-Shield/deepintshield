@@ -124,6 +124,8 @@ class Decision(BaseModel):
     proceed: Optional[bool] = None
     would_block: bool = False
     approval_id: str = ""
+    task_id: str = ""
+    task_receipt: str = ""
 
 
 class GAFDecision(BaseModel):
@@ -140,6 +142,23 @@ class GAFDecision(BaseModel):
     would_block: bool = False
     proceed: Optional[bool] = None
     approval_id: str = ""
+    task_id: str = ""
+    task_receipt: str = ""
+
+
+class RuntimeBrokerInfo(BaseModel):
+    """Public gateway runtime endpoints and exact platform identity scope."""
+
+    enrollment_path: str = ""
+    challenge_path: str = ""
+    session_path: str = ""
+    tenant_id: str = ""
+    workspace_id: str = ""
+    agent_subject: str = ""
+    scope_key: str = ""
+    binding_id: str = ""
+    runtime_kind: str = ""
+    runtime_audience: str = ""
 
 
 class VKCredentialInfo(BaseModel):
@@ -159,6 +178,8 @@ class VKCredentialInfo(BaseModel):
     blueprint_client_id: str = ""
     agent_identity_client_id: str = ""
     authority: str = ""
+    issuer: str = ""
+    require_proof_of_possession: bool = False
     gateway_audience: str = ""
     scopes: List[str] = Field(default_factory=list)
     fic_audience: str = "api://AzureADTokenExchange"
@@ -169,6 +190,32 @@ class VKCredentialInfo(BaseModel):
     # key's Registry associations. Empty on older gateways; in that case the SDK
     # omits its claim and lets the data plane select from authenticated context.
     agent_subject: str = ""
+    # An absent mode preserves existing external-issuer authentication. Broker
+    # mode is explicit and never falls back to an ambient provider credential.
+    runtime_auth_mode: str = ""
+    runtime_broker: Optional[RuntimeBrokerInfo] = None
+    # A pending registration may receive key-only broker settings so the
+    # workload can enrol its runtime key before an administrator reviews it.
+    # ``credential_bootstrap``/``registration_state`` mark that pending state;
+    # ``provisional`` marks a runtime key bound to the registration rather than
+    # to a declared identity. Older gateways omit all of them. The gateway
+    # makes the provisional offer to a client that asked for it with the
+    # ``X-DeepintShield-Runtime-Key: provisional`` request header; a client
+    # that cannot hold a runtime key does not ask and gets the pending answer.
+    credential_bootstrap: bool = False
+    provisional: bool = False
+    registration_state: str = ""
+    registration_id: str = ""
+    # ``credential_optional`` is set by the gateway on one answer only: an
+    # approved agent without an identity provider (VK-trusted) that has an
+    # identity declared under a provider with gateway exchange. The gateway
+    # admits that agent on its virtual key; the declared identity is an
+    # upgrade an administrator may still authorize. A failure to build this
+    # credential or to obtain its token therefore does not stop the call, and
+    # ``credential_bootstrap`` beside it does not mean "registration pending".
+    # Only this server-sent flag has that effect. Older gateways omit it, and
+    # every answer without it fails closed exactly as before.
+    credential_optional: bool = False
 
 
-__all__ = ["Verdict", "Decision", "DelegationContext", "ContextBag", "VKCredentialInfo"]
+__all__ = ["Verdict", "Decision", "DelegationContext", "ContextBag", "VKCredentialInfo", "RuntimeBrokerInfo"]

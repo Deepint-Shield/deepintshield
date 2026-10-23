@@ -330,6 +330,45 @@ def test_existing_sdk_error_keeps_its_precise_code_without_raw_prose():
     assert "secret" not in repr(mapped.to_dict())
 
 
+@pytest.mark.parametrize("mcp_code", [-32602, -32603, 408])
+def test_repeated_exception_mapping_retains_safe_rpc_evidence(mcp_code):
+    original = DeepintShieldError(
+        "private diagnostic",
+        code=ErrorCode.MCP_EXECUTION_FAILED,
+        details={
+            "mcp_code": mcp_code,
+            "upstream_type": "McpError",
+            "response_code": "remote_tool_rejected",
+            "access_token": "must-not-escape",
+        },
+    )
+    mapped = mcp_error_from_exception(
+        original, "call_tool", ErrorCode.MCP_PROTOCOL_ERROR
+    )
+    assert mapped.code == ErrorCode.MCP_EXECUTION_FAILED.value
+    assert mapped.details == {
+        "operation": "call_tool",
+        "upstream_type": "McpError",
+        "response_code": "remote_tool_rejected",
+        "mcp_code": mcp_code,
+    }
+    assert "must-not-escape" not in repr(mapped.to_dict())
+
+
+@pytest.mark.parametrize("mcp_code", [True, "-32602", 2**32, -(2**32)])
+def test_repeated_exception_mapping_rejects_unsafe_numeric_evidence(mcp_code):
+    original = DeepintShieldError(
+        "private diagnostic",
+        code=ErrorCode.MCP_EXECUTION_FAILED,
+        details={"mcp_code": mcp_code, "upstream_type": "private prose"},
+    )
+    mapped = mcp_error_from_exception(
+        original, "call_tool", ErrorCode.MCP_PROTOCOL_ERROR
+    )
+    assert "mcp_code" not in mapped.details
+    assert mapped.details["upstream_type"] == "DeepintShieldError"
+
+
 def test_known_gaf_exception_overrides_fallback_and_nested_group_siblings():
     exception_group = getattr(builtins, "ExceptionGroup", None)
     if exception_group is None:  # pragma: no cover - Python 3.10 support

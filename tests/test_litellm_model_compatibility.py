@@ -1,4 +1,4 @@
-"""Exercise real LiteLLM serialization; only the network and PDP are mocked."""
+"""Exercise real LiteLLM inference without mocking Agentic authorization."""
 
 from __future__ import annotations
 
@@ -20,10 +20,6 @@ MODELS = [f"{provider}/new-release/deployment-model" for provider in CHAT_PROVID
 def litellm_wire(monkeypatch):
     monkeypatch.setenv("LITELLM_LOCAL_MODEL_COST_MAP", "True")
     native = pytest.importorskip("litellm")
-    # Authorization is covered by test_agentic_new_enforcement.py. These
-    # contracts isolate native SDK routing without requiring a running PDP.
-    from deepintshield.agentic.integrations import litellm as integration
-    monkeypatch.setattr(integration, "_check", lambda kwargs, args: kwargs)
     from litellm.llms.openai.openai import OpenAIChatCompletion
     native.in_memory_llm_clients_cache.flush_cache()
     return OpenAIChatCompletion

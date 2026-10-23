@@ -5,7 +5,7 @@ ordinary agent calls are gated without a hook argument or per-tool wrapper.
 Point ``OpenAIModel(base_url=...)`` at the gateway for the LLM leg
 (cache/guardrails/cost).
 
-    pip install 'deepintshield[strands]'   # strands-agents
+    pip install 'deepintshield[strands]==3.2.0'   # strands-agents
 """
 import os
 

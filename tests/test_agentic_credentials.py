@@ -169,3 +169,37 @@ def test_entra_credential_uses_blueprint_t1_then_child_identity_t2():
         "api://custom-managed-identity-audience/.default"
     ]
     assert len(exchanges) == 2
+
+
+def test_entra_credential_builds_no_host_credential_eagerly(monkeypatch):
+    import sys
+    import types
+
+    constructed = []
+
+    class Recording:
+        def __init__(self, *args, **kwargs):
+            constructed.append(type(self).__name__)
+
+    azure_identity = types.ModuleType("azure.identity")
+    for name in (
+        "ChainedTokenCredential",
+        "EnvironmentCredential",
+        "WorkloadIdentityCredential",
+        "ManagedIdentityCredential",
+        "DefaultAzureCredential",
+    ):
+        setattr(azure_identity, name, type(name, (Recording,), {}))
+    monkeypatch.setitem(sys.modules, "azure.identity", azure_identity)
+
+    credential = EntraAgentCredential(
+        authority="https://login.microsoftonline.com/tenant/v2.0",
+        blueprint_client_id="blueprint-client",
+        agent_identity_client_id="child-agent-client",
+        gateway_audience="api://deepintshield-gateway",
+        scopes=["tools:invoke"],
+    )
+
+    assert constructed == []
+    assert credential._mi_credential is None
+    assert credential._host_credential is None

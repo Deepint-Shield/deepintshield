@@ -838,6 +838,75 @@ def test_clients_sharing_one_vk_select_distinct_agent_bindings(shield_factory):
     ]
 
 
+def test_same_tool_alias_keeps_each_agent_decision_independent(shield_factory):
+    sent: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        subject = request.headers.get("X-Agent-Subject", "")
+        if request.url.path.endswith("/agentic-new/credential-info"):
+            return httpx.Response(200, json={"agent_configured": False, "agent_subject": subject})
+        if request.url.path.endswith("/agentic-new/decide"):
+            body = _body(request)
+            sent.append(body)
+            allowed = subject == "agent:planner"
+            return httpx.Response(200, json={
+                "verdict": "ALLOW" if allowed else "DENY", "allow": allowed,
+                "proceed": allowed, "mode": "enforce", "decision_id": f"decision-{len(sent)}",
+                "reason": "" if allowed else "tool_not_allowed",
+            })
+        return httpx.Response(404)
+
+    planner = shield_factory(handler, agent_name="planner")
+    auditor = shield_factory(handler, agent_name="auditor")
+    decisions = [client.agentic.decide(tool="invoice_read", args={}) for client in (planner, auditor, planner)]
+
+    assert [decision.proceed for decision in decisions] == [True, False, True]
+    assert [body["agent"] for body in sent] == ["agent:planner", "agent:auditor", "agent:planner"]
+    assert {body["tool"] for body in sent} == {"tool:invoice_read"}
+    assert {body["object"] for body in sent} == {_permission_subject("invoice_read:read")}
+    assert len({decision.decision_id for decision in decisions}) == 3
+
+
+@pytest.mark.parametrize("code", ["agent_tool_scope_mismatch", "agent_tool_identity_review_required"])
+def test_agent_tool_identity_errors_keep_safe_administrator_guidance(shield_factory, code):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/agentic-new/credential-info"):
+            return httpx.Response(200, json={"agent_configured": False, "agent_subject": "agent:planner"})
+        if request.url.path.endswith("/agentic-new/decide"):
+            return httpx.Response(403, json={"error": {"code": code, "message": "PRIVATE owner and source"}})
+        return httpx.Response(404)
+
+    with pytest.raises(RuntimeError) as caught:
+        shield_factory(handler, agent_name="planner").agentic.decide(tool="invoice_read", args={})
+    assert caught.value._deepintshield_error_code == code
+    assert str(caught.value).endswith("Please contact your administrator.")
+    assert "PRIVATE" not in str(caught.value)
+
+
+@pytest.mark.parametrize("code", ["agent_tool_scope_mismatch", "agent_tool_identity_review_required"])
+def test_agent_tool_identity_denials_stop_the_function_with_specific_guidance(shield_factory, code):
+    executed = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/agentic-new/credential-info"):
+            return httpx.Response(200, json={"agent_configured": False, "agent_subject": "agent:planner"})
+        if request.url.path.endswith("/agentic-new/decide"):
+            return httpx.Response(200, json={"verdict": "DENY", "allow": False, "proceed": False, "mode": "enforce", "reason": code})
+        return httpx.Response(404)
+
+    client = shield_factory(handler, agent_name="planner")
+
+    @client.agentic.tool("invoice_read")
+    def invoice_read():
+        executed.append(True)
+
+    with pytest.raises(PermissionError) as caught:
+        invoice_read()
+    assert caught.value._deepintshield_error_code == code
+    assert str(caught.value).endswith("Please contact your administrator.")
+    assert executed == []
+
+
 def test_vk_agent_subject_discovery_is_single_flight(shield_factory):
     reads = 0
     lock = threading.Lock()

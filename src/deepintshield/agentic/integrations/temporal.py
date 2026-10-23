@@ -28,9 +28,9 @@ use the workflow's normal retry policy); a policy DENY raises a NON-retryable
 from __future__ import annotations
 
 import functools
-import inspect
 from typing import Any
 
+from ..._compat import call_signature
 from ..errors import (
     AGENT_ACCESS_DENIED,
     AGENT_APPROVAL_PENDING,
@@ -199,7 +199,7 @@ def enforce() -> bool:
     if getattr(original, "_deepintshield_guarded", False):
         return True
     try:
-        signature = inspect.signature(original)
+        signature = call_signature(original)
     except (TypeError, ValueError):
         return False
     if "interceptors" not in signature.parameters:

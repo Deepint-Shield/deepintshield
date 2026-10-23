@@ -11,7 +11,7 @@ relationships.
 Two entry points:
 
   * :func:`describe_network` - pure, offline introspection of a compiled
-    LangGraph / CrewAI crew / LlamaIndex or AutoGen agent (with a generic
+    LangGraph / LlamaIndex or AutoGen agent (with a generic
     fallback for everything else), producing the ``/registry/discover`` payload
     plus a stable ``sha256`` digest over the topology. The digest is what makes
     the server-side upsert idempotent and what turns a changed graph into a
@@ -31,6 +31,8 @@ discards source after analysis and persists only digests/findings.
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import hashlib
 import hmac
 import inspect
@@ -46,12 +48,16 @@ import weakref
 from typing import Any, Optional
 from urllib.parse import urlsplit, urlunsplit
 
+from ..config import _REGISTERED_BY_EXPLICIT, _REGISTERED_BY_SOURCES
+from ..errors import get_error_definition
 from .actions import infer_action_class
 from .errors import (
+    _REGISTRATION_MESSAGE_CODES,
     DeepIntShieldError,
-    GovernanceConfigurationError,
+    format_registration_message,
     normalize_agentic_error_code,
 )
+from .instrumentation import is_factory_function, is_sdk_instrumentation_wrapper
 
 log = logging.getLogger(__name__)
 
@@ -190,8 +196,52 @@ def _source_digest(source: str) -> str:
     ).hexdigest()
 
 
+def _openai_tool_implementation(value: Any) -> Any:
+    """Decode a verified native function-tool invoker to its actual callable.
+
+    New OpenAI Agents releases wrap the application function in an invocation
+    object. Reading that object's framework ``__call__`` source misses the
+    application's code. Only exact native invoker/factory implementations are
+    decoded; custom callables and modified invocation handlers remain scanned.
+    """
+    module = sys.modules.get("agents.tool")
+    if not inspect.ismodule(module):
+        return None
+    implementation = value
+    invoker_type = vars(module).get("_FailureHandlingFunctionToolInvoker")
+    if isinstance(invoker_type, type) and type(value) is invoker_type:
+        call = vars(invoker_type).get("__call__")
+        if not inspect.isfunction(call) or call.__globals__ is not vars(module):
+            return None
+        values = vars(value)
+        if not is_factory_function(
+            values.get("_on_handled_error"),
+            module,
+            "_build_handled_function_tool_error_handler",
+        ):
+            return None
+        implementation = values.get("_invoke_tool_impl")
+    if not is_factory_function(implementation, module, "function_tool"):
+        return None
+    try:
+        original = implementation.__closure__[
+            implementation.__code__.co_freevars.index("the_func")
+        ].cell_contents
+    except (AttributeError, IndexError, TypeError, ValueError):
+        return None
+    declared = vars(implementation).get(
+        "__agents_function_tool_wrapped_callable__", original,
+    )
+    if original is value or declared is not original or not callable(original):
+        return None
+    return original
+
+
 def _python_function(value: Any) -> Any:
     """Return the directly executed Python function without unwrapping it."""
+    native_implementation = _openai_tool_implementation(value)
+    if native_implementation is not None:
+        value = native_implementation
     if inspect.ismethod(value):
         value = _attr(value, "__func__", value)
     if inspect.isfunction(value):
@@ -253,7 +303,14 @@ def _application_source_root(value: Any) -> str:
     if not source_file:
         return ""
     root = os.path.realpath(os.path.dirname(source_file))
-    module = str(_attr(value, "__module__", "") or "")
+    # functools.wraps copies __module__ from a potentially unrelated package.
+    # The defining globals retain the wrapper's actual package provenance.
+    defining_globals = _attr(value, "__globals__", None)
+    module = str(
+        defining_globals.get("__name__", "")
+        if isinstance(defining_globals, dict)
+        else _attr(value, "__module__", "") or ""
+    )
     parts = [part for part in module.split(".") if part and part != "__main__"]
     # ``pkg.sub.module`` lives at ``<root>/pkg/sub/module.py``. Starting from
     # its directory, one ascent reaches the top-level ``pkg`` source tree.
@@ -264,6 +321,8 @@ def _application_source_root(value: Any) -> str:
 
 def _is_application_function(value: Any, application_root: str) -> bool:
     fn = _python_function(value)
+    if fn is not None and is_sdk_instrumentation_wrapper(fn):
+        return False
     source_file = os.path.realpath(_source_file(fn)) if fn is not None else ""
     if not source_file or not application_root:
         return False
@@ -385,22 +444,28 @@ def _safe_runtime_constant(value: Any, depth: int = 0) -> Any:
     return ["object", type(value).__module__, type(value).__qualname__]
 
 
+def _callable_source_roots(layers: list[Any]) -> list[tuple[Any, str]]:
+    """Executed implementations, each with its own bounded dependency tree."""
+    if not layers:
+        return []
+    roots = [layers[-1], *(
+        layer for layer in layers[:-1] if not is_sdk_instrumentation_wrapper(layer)
+    )]
+    return [(root, _application_source_root(root)) for root in roots]
+
+
 def _callable_change_token(value: Any) -> str:
     """Cheap local digest of executed wrappers, code, defaults, and helpers."""
     layers, wrapper_incomplete = _callable_layers(value)
     if not layers:
         return ""
-    implementation = layers[-1]
-    application_root = _application_source_root(implementation)
-    roots = [
-        layer for layer in layers if _is_application_function(layer, application_root)
-    ] or [implementation]
-    queue = [(root, 0) for root in roots]
+    roots = _callable_source_roots(layers)
+    queue = [(root, 0, root_tree) for root, root_tree in roots]
     visited: set[tuple[str, str, int]] = set()
     entries: list[tuple[tuple[str, str, int], bytes, Any]] = []
     incomplete = wrapper_incomplete
     while queue:
-        fn, depth = queue.pop(0)
+        fn, depth, application_root = queue.pop(0)
         identity = _function_identity(fn)
         if identity in visited:
             continue
@@ -429,8 +494,8 @@ def _callable_change_token(value: Any) -> str:
         if children and depth >= _CODE_HELPER_MAX_DEPTH:
             incomplete = True
             continue
-        queue.extend((child, depth + 1) for child in children)
-        queue.sort(key=lambda item: (_function_identity(item[0]), item[1]))
+        queue.extend((child, depth + 1, application_root) for child in children)
+        queue.sort(key=lambda item: (_function_identity(item[0]), item[1], item[2]))
     if not entries:
         return ""
     digest = hashlib.sha256()
@@ -446,9 +511,53 @@ def _callable_change_token(value: Any) -> str:
     return "sha256:" + digest.hexdigest()
 
 
+# Composition classes whose instances carry no Python function of their own:
+# LangChain's runnable primitives and LangGraph's compiled node holders.
+_RUNNABLE_COMPOSITE_MODULE_PREFIXES = ("langchain_core.runnables", "langgraph")
+
+
+def _runnable_composite_source(value: Any) -> str:
+    """The composition text of a composite Runnable, or of the compiled
+    LangGraph node holding one (``bound`` / ``runnable``), when ``value`` is
+    passed where a callable is expected; "" for anything else.
+
+    It is the same text ``_from_langgraph`` reports as such a node's code
+    artifact, so the execution gate's attestation and the discovery artifact
+    agree. Without this the gate attested the framework method it wraps (the
+    bound runnable's ``invoke``), which never matched the acknowledged
+    artifact, and the first execution re-registered the node under that
+    framework source - an incomplete artifact the gateway refuses as
+    ``blueprint_coverage_incomplete``, quarantining the agent. Application
+    tools and callable objects keep their own reading: only a composition
+    class, or a holder of one, is described this way.
+    """
+    if value is None or inspect.isclass(value) or _python_function(value) is not None:
+        return ""
+    holder = (
+        _attr(value, "bound", None) is not None
+        or _attr(value, "runnable", None) is not None
+    )
+    if not holder:
+        module = str(_attr(type(value), "__module__", "") or "")
+        if not module.startswith(_RUNNABLE_COMPOSITE_MODULE_PREFIXES):
+            return ""
+    from .manifest import _composite_node_source
+
+    try:
+        return _composite_node_source(value)
+    except Exception:
+        return ""
+
+
 def _expanded_callable_source(value: Any) -> tuple[str, bool]:
     """Read a callable plus bounded wrappers and application helper source."""
     layers, wrapper_incomplete = _callable_layers(value)
+    if not layers:
+        # A composite Runnable has no function to read: its code is the
+        # composition it dispatches, exactly as discovery describes it.
+        composite = _runnable_composite_source(value)
+        if composite:
+            return composite, False
     cache_key = layers[0] if layers else None
     change_token = _callable_change_token(value) if cache_key is not None else ""
     if cache_key is not None and change_token:
@@ -476,12 +585,9 @@ def _expanded_callable_source(value: Any) -> tuple[str, bool]:
         return source, False
 
     wrapper_sources: list[tuple[tuple[str, str, int], str]] = []
-    roots = [root_fn]
+    roots = _callable_source_roots(layers) or [(root_fn, application_root)]
     incomplete = wrapper_incomplete
-    for wrapper in layers[:-1]:
-        if not _is_application_function(wrapper, application_root):
-            continue
-        roots.append(wrapper)
+    for wrapper, _root_tree in roots[1:]:
         try:
             wrapper_source = _direct_source(wrapper)
         except (OSError, TypeError, ValueError, AttributeError):
@@ -495,17 +601,17 @@ def _expanded_callable_source(value: Any) -> tuple[str, bool]:
             continue
         wrapper_sources.append((_function_identity(wrapper), wrapper_source))
 
-    visited = {_function_identity(root) for root in roots}
-    queue: list[tuple[Any, int]] = []
-    for root in roots:
+    visited = {_function_identity(root) for root, _root_tree in roots}
+    queue: list[tuple[Any, int, str]] = []
+    for root, root_tree in roots:
         dependencies, dependency_incomplete = _local_function_dependencies(
-            root, application_root
+            root, root_tree
         )
         incomplete = incomplete or dependency_incomplete
-        queue.extend((dependency, 1) for dependency in dependencies)
+        queue.extend((dependency, 1, root_tree) for dependency in dependencies)
     helpers: list[tuple[tuple[str, str, int], str]] = []
     while queue:
-        helper, depth = queue.pop(0)
+        helper, depth, application_root = queue.pop(0)
         identity = _function_identity(helper)
         if identity in visited:
             continue
@@ -532,11 +638,12 @@ def _expanded_callable_source(value: Any) -> tuple[str, bool]:
         if children and depth >= _CODE_HELPER_MAX_DEPTH:
             incomplete = True
             continue
-        queue.extend((child, depth + 1) for child in children)
+        queue.extend((child, depth + 1, application_root) for child in children)
         queue.sort(
             key=lambda item: (
                 _function_identity(item[0]),
                 item[1],
+                item[2],
             )
         )
 
@@ -816,6 +923,74 @@ def _self_attested_code_digest(
     ).hexdigest()
 
 
+_DEFINITION_TEXT_FIELDS = ("instructions", "system_prompt", "system_message", "description")
+_DEFINITION_TYPE_FIELDS = ("output_type", "result_type", "output_schema", "response_format")
+_DEFINITION_MAX_TEXT = 4000
+
+
+def _program_definition_source(obj: Any, nodes: list[dict[str, Any]], framework: str) -> str:
+    """The declarative definition of a program that holds no application code."""
+    agent_nodes = [node for node in nodes if node.get("kind") == "agent"]
+    lines = [
+        "# deepintshield program definition: this program holds no application code of its own;",
+        "# what runs is the agent definition below (instructions, model, output type, handoffs).",
+        f"# framework: {framework}",
+    ]
+    for node in agent_nodes:
+        model = node.get("model") or _framework_model(obj)
+        lines.append(f"# agent {node.get('id')}" + (f": model={model!r}" if model else ""))
+    name = _agent_name(obj)
+    if name:
+        lines.append(f"name = {name!r}")
+    # autogen_agentchat keeps the system message as a list of message objects;
+    # it is the agent's instructions, ahead of the framework's default description.
+    system_messages = _attr(obj, "_system_messages", None)
+    texts = [
+        str(getattr(message, "content", message))
+        for message in (system_messages if isinstance(system_messages, (list, tuple)) else ())
+        if isinstance(getattr(message, "content", message), str) and str(getattr(message, "content", message)).strip()
+    ]
+    if texts:
+        value = "\n".join(texts)
+        text = value if len(value) <= _DEFINITION_MAX_TEXT else value[:_DEFINITION_MAX_TEXT] + "..."
+        lines.append(f"system_message = {text!r}")
+    for field in () if texts else _DEFINITION_TEXT_FIELDS:
+        value = _attr(obj, field, None)
+        if isinstance(value, str) and value.strip():
+            text = value if len(value) <= _DEFINITION_MAX_TEXT else value[:_DEFINITION_MAX_TEXT] + "..."
+            lines.append(f"{field} = {text!r}")
+            break
+    for field in _DEFINITION_TYPE_FIELDS:
+        value = _attr(obj, field, None)
+        if value is None:
+            continue
+        label = getattr(value, "__name__", None) or type(value).__name__
+        lines.append(f"{field} = {label}")
+        break
+    handoffs = _attr(obj, "handoffs", None)
+    if isinstance(handoffs, (list, tuple)) and handoffs:
+        names = [_agent_name(item) or type(item).__name__ for item in handoffs[:32]]
+        lines.append(f"handoffs = {names!r}")
+    return "\n".join(lines) + "\n"
+
+
+def _program_definition_artifact(
+    obj: Any, nodes: list[dict[str, Any]], framework: str
+) -> dict[str, Any] | None:
+    agent_nodes = [node for node in nodes if node.get("kind") == "agent"]
+    if not agent_nodes:
+        return None
+    try:
+        source = _program_definition_source(obj, nodes, framework)
+    except Exception:
+        return None
+    subject = str(agent_nodes[0].get("id") or "")
+    if not subject:
+        return None
+    artifact = _source_artifact(None, subject_kind="agent", subject_key=subject, source=source)
+    return None if artifact.get("_incomplete") else artifact
+
+
 def _collect_code_artifacts(
     nodes: list[dict[str, Any]], tools: list[dict[str, Any]]
 ) -> tuple[list[dict[str, Any]], bool, list[dict[str, str]]]:
@@ -945,7 +1120,7 @@ def describe_network(
 
     Accepts, in this order: a **plain dict** already shaped like a manifest
     (normalised and re-digested, never introspected), a **compiled LangGraph**,
-    an **uncompiled ``StateGraph``**, a **CrewAI ``Crew``**, an AutoGen team, a
+    an **uncompiled ``StateGraph``**, an AutoGen team, a
     LlamaIndex agent, and **any other object** via the generic fallback.
 
     Framework detection is duck-typed - no framework is ever imported here, and
@@ -979,6 +1154,18 @@ def _describe_network(obj: Any, *, name: str, framework: str) -> dict[str, Any]:
     digest = _digest(nodes, edges)
     agents = _agents_from(nodes, edges)
     artifacts, artifacts_incomplete, coverage = _collect_code_artifacts(nodes, tools)
+    if not artifacts and not artifacts_incomplete and not coverage and not tools and not servers:
+        # A program with no application code of its own (an agent made of
+        # instructions, a model and an output type, with no tools, hooks or
+        # callbacks) still has to present something the gateway can scan: the
+        # blueprint envelope is an inventory requirement, and a report with no
+        # artifact at all is refused as incomplete coverage and quarantines the
+        # reporter. Its code is its definition. A program whose only tools are
+        # remote MCP tools is different: the gateway verifies those through its
+        # own inventory and exempts them from source coverage.
+        definition = _program_definition_artifact(obj, nodes, fw)
+        if definition:
+            artifacts = [definition]
     # Extractors may carry private assembly hints for the derived agents list;
     # never put those non-contract fields on ManifestNode's wire shape.
     for node in nodes:
@@ -1039,8 +1226,8 @@ def _introspect(obj: Any) -> tuple[str, list[dict], list[dict], list[dict], list
     so discovery and enforcement always agree on the framework."""
     if _is_langgraph(obj):
         return _from_langgraph(obj)
-    if _is_crewai(obj):
-        return _from_crewai(obj)
+    if _is_openai_agents(obj):
+        return _from_openai_agents(obj)
     if _is_autogen(obj):
         return _from_autogen(obj)
     if _is_llamaindex(obj):
@@ -1138,14 +1325,39 @@ def _from_langgraph(app: Any) -> tuple[str, list[dict], list[dict], list[dict], 
                 artifact["subject_key"] = key
                 agent_node["_code_artifact"] = artifact
         else:
-            # This is still an executable graph node. An unknown Runnable shape
-            # must not disappear from the coverage ledger as though it contained
-            # no code.
-            agent_node["_code_artifact"] = _source_artifact(
-                None,
-                subject_kind="agent",
-                subject_key=key,
-            )
+            # A composite Runnable node (RunnableParallel, a chain, a branch, a
+            # subgraph) has no single function. The enforcement adapter gates it
+            # under the node key, so that key is its governed identity, and its
+            # code is the composition it dispatches plus every Python callable
+            # inside it - the same text the blueprint manifest carries. An
+            # unknown Runnable shape, or a callable inside it whose source
+            # cannot be read, stays in the coverage ledger as incomplete rather
+            # than disappearing as though it contained no code.
+            from .manifest import _composite_node_source
+
+            composite = _composite_node_source(node)
+            if composite:
+                action_class = _action_class(key)
+                entry = {
+                    "key": _key(key) or "tool",
+                    "name": key,
+                    "action_class": action_class,
+                    "actions": [_default_action(key, action_class=action_class)],
+                    "_code_artifact": _source_artifact(
+                        None, subject_kind="tool", subject_key=key, source=composite,
+                    ),
+                }
+                tools.setdefault(entry["key"], entry)
+                agent_node["_capabilities"] = [entry["key"]]
+                agent_node["_code_artifact"] = _source_artifact(
+                    None, subject_kind="agent", subject_key=key, source=composite,
+                )
+            else:
+                agent_node["_code_artifact"] = _source_artifact(
+                    None,
+                    subject_kind="agent",
+                    subject_key=key,
+                )
 
     edges: list[dict[str, Any]] = [
         {"from": alias.get(src, src), "to": alias.get(dst, dst), **extra}
@@ -1269,69 +1481,7 @@ def _node_model(node: Any) -> str:
     return ""
 
 
-# ── CrewAI ────────────────────────────────────────────────────────────────
-
-
-def _is_crewai(obj: Any) -> bool:
-    return isinstance(_attr(obj, "agents", None), (list, tuple)) and _has(obj, "tasks")
-
-
-def _from_crewai(crew: Any) -> tuple[str, list[dict], list[dict], list[dict], list[dict]]:
-    from .integrations._common import merge_callback_inventories
-    from .integrations.crewai import executable_callbacks
-
-    nodes: list[dict[str, Any]] = [{"id": "input", "label": "Input", "kind": "input"}]
-    edges: list[dict[str, Any]] = []
-    tools: dict[str, dict[str, Any]] = {}
-    servers: dict[str, dict[str, Any]] = {}
-    previous = "input"
-
-    for index, agent in enumerate(_attr(crew, "agents", None) or []):
-        key = _slug(_agent_name(agent))
-        if not key:
-            continue
-        entry: dict[str, Any] = {"id": key, "label": _label(key), "kind": "agent"}
-        model = _crew_model(agent)
-        if model:
-            entry["model"] = model
-        _attach_callback_inventory(
-            entry,
-            executable_callbacks(agent, prefix=f"agent[{index}]"),
-        )
-        nodes.append(entry)
-        edges.append({"from": previous, "to": key})
-        previous = key
-        for tool in _iter_tools(_attr(agent, "tools", None)):
-            t = _tool_entry(tool)
-            tools.setdefault(t["key"], t)
-            _merge_server(servers, tool)
-            nodes.append({
-                "id": t["key"], "label": t["name"], "kind": "tool", "ref": f"tool:{t['key']}",
-            })
-            edges.append({"from": key, "to": t["key"], "kind": "tool"})
-
-    nodes.append({"id": "output", "label": "Output", "kind": "output"})
-    edges.append({"from": previous, "to": "output"})
-    network_callbacks = [executable_callbacks(crew, prefix="crew")]
-    for index, task in enumerate(_attr(crew, "tasks", None) or []):
-        network_callbacks.append(
-            executable_callbacks(task, prefix=f"task[{index}]")
-        )
-    _append_callback_router(
-        nodes,
-        edges,
-        merge_callback_inventories(*network_callbacks),
-        framework="crewai",
-    )
-    for tool in _iter_tools(_attr(crew, "tools", None)):
-        t = _tool_entry(tool)
-        tools.setdefault(t["key"], t)
-        _merge_server(servers, tool)
-    _merge_server_specs(servers, _declared_servers(crew))
-    return "crewai", nodes, edges, list(tools.values()), list(servers.values())
-
-
-def _crew_model(agent: Any) -> str:
+def _llm_model(agent: Any) -> str:
     llm = _attr(agent, "llm", None)
     for holder in (llm, agent):
         if holder is None:
@@ -1358,15 +1508,36 @@ def _agent_name(agent: Any) -> str:
 
 
 def _is_autogen(obj: Any) -> bool:
-    """A team/group chat: a list of participants and no CrewAI-style tasks."""
+    """A team/group chat (a list of participants without task orchestration), or
+    one AutoGen agent run on its own."""
     participants = _attr(obj, "_participants", None) or _attr(obj, "agents", None)
-    return isinstance(participants, (list, tuple)) and bool(participants) and not _has(obj, "tasks")
+    if isinstance(participants, (list, tuple)) and bool(participants) and not _has(obj, "tasks"):
+        return True
+    return _is_autogen_agent(obj)
+
+
+def _is_autogen_agent(obj: Any) -> bool:
+    """One ``autogen_agentchat`` / AG2 agent used without a team. Left to the
+    generic path it has no tool surface of its own and its ``run`` method is
+    framework code (wrapped by the runtime guard), so the discovery report
+    carried no artifact and read as incomplete coverage."""
+    if isinstance(obj, (list, tuple, set, dict)) or isinstance(obj, type):
+        return False
+    module = str(_attr(type(obj), "__module__", "") or "")
+    if not (module.startswith("autogen_agentchat.") or module.startswith("autogen.agentchat")):
+        return False
+    return isinstance(_attr(obj, "name", None), str) and callable(_attr(obj, "run", None) or _attr(obj, "initiate_chat", None))
 
 
 def _from_autogen(team: Any) -> tuple[str, list[dict], list[dict], list[dict], list[dict]]:
     from .integrations.autogen import executable_callbacks
 
     participants = _attr(team, "_participants", None) or _attr(team, "agents", None) or []
+    single_agent = not participants and _is_autogen_agent(team)
+    if single_agent:
+        # The agent is its own one-participant program; its hooks are read once,
+        # as the participant's, not again as a team's.
+        participants = [team]
     nodes: list[dict[str, Any]] = [{"id": "input", "label": "Input", "kind": "input"}]
     edges: list[dict[str, Any]] = []
     tools: dict[str, dict[str, Any]] = {}
@@ -1399,12 +1570,13 @@ def _from_autogen(team: Any) -> tuple[str, list[dict], list[dict], list[dict], l
 
     nodes.append({"id": "output", "label": "Output", "kind": "output"})
     edges.append({"from": previous, "to": "output"})
-    _append_callback_router(
-        nodes,
-        edges,
-        executable_callbacks(team, prefix="team"),
-        framework="autogen",
-    )
+    if not single_agent:
+        _append_callback_router(
+            nodes,
+            edges,
+            executable_callbacks(team, prefix="team"),
+            framework="autogen",
+        )
     _merge_server_specs(servers, _declared_servers(team))
     return "autogen", nodes, edges, list(tools.values()), list(servers.values())
 
@@ -1416,6 +1588,13 @@ def _autogen_model(agent: Any) -> str:
             continue
         for attr in ("model", "model_name", "model_id"):
             value = _attr(holder, attr, None)
+            if isinstance(value, str) and value:
+                return value
+        # autogen_ext's OpenAI-compatible clients keep the model in their create
+        # arguments rather than as an attribute.
+        for attr in ("_create_args", "create_args", "_raw_config"):
+            config = _attr(holder, attr, None)
+            value = config.get("model") if isinstance(config, dict) else None
             if isinstance(value, str) and value:
                 return value
     return ""
@@ -1435,7 +1614,7 @@ def _from_llamaindex(agent: Any) -> tuple[str, list[dict], list[dict], list[dict
 
     key = _slug(_agent_name(agent)) or "llamaindex-agent"
     entry: dict[str, Any] = {"id": key, "label": _label(key), "kind": "agent"}
-    model = _crew_model(agent)
+    model = _llm_model(agent)
     if model:
         entry["model"] = model
     _attach_callback_inventory(
@@ -1467,11 +1646,84 @@ def _from_llamaindex(agent: Any) -> tuple[str, list[dict], list[dict], list[dict
     return "llamaindex", nodes, edges, list(tools.values()), list(servers.values())
 
 
-# ── Google ADK / Strands / Temporal ─────────────────────────────────────
+# ── OpenAI Agents / Google ADK / Strands / Temporal ─────────────────────
 
 
 def _module_name(obj: Any) -> str:
     return str(_attr(type(obj), "__module__", "") or "")
+
+
+def _is_openai_agents(obj: Any) -> bool:
+    return _module_name(obj).startswith("agents.") and _has(obj, "tools") and _has(obj, "handoffs")
+
+
+def _from_openai_agents(
+    root: Any,
+) -> tuple[str, list[dict], list[dict], list[dict], list[dict]]:
+    """Capture the bounded handoff tree, including each agent's callbacks."""
+    from .integrations._common import CallbackInventory
+    from .integrations.openai_agents import executable_callbacks, handoff_agents
+
+    nodes: list[dict[str, Any]] = [{"id": "input", "label": "Input", "kind": "input"}]
+    edges: list[dict[str, Any]] = []
+    tools: dict[str, dict[str, Any]] = {}
+    servers: dict[str, dict[str, Any]] = {}
+    visited: dict[int, str] = {}
+    entries: dict[str, dict[str, Any]] = {}
+
+    def visit(agent: Any, parent: str) -> str:
+        known = visited.get(id(agent))
+        if known:
+            edges.append({"from": parent, "to": known, "kind": "handoff"})
+            return known
+        if len(visited) >= 64:
+            if parent in entries:
+                _attach_callback_inventory(entries[parent], CallbackInventory(incomplete=True))
+            return ""
+        name = _agent_name(agent)
+        base = _key(name) or "openai-agent"
+        key = base
+        suffix = 2
+        while key in entries:
+            key = f"{base}-{suffix}"
+            suffix += 1
+        visited[id(agent)] = key
+        entry: dict[str, Any] = {"id": key, "label": name or _label(key), "kind": "agent"}
+        entries[key] = entry
+        _attach_callback_inventory(entry, executable_callbacks(agent, prefix=f"agent.{key}"))
+        model = _framework_model(agent)
+        if model:
+            entry["model"] = model
+        nodes.append(entry)
+        edges.append({"from": parent, "to": key, "kind": "handoff" if parent != "input" else "flow"})
+        for tool in _iter_tools(_attr(agent, "tools", None)):
+            tool_entry = _tool_entry(tool)
+            tool_key = tool_entry["key"]
+            previous = tools.get(tool_key)
+            if previous is None:
+                tools[tool_key] = tool_entry
+                nodes.append({"id": tool_key, "label": tool_entry["name"], "kind": "tool", "ref": f"tool:{tool_key}"})
+            else:
+                # Identically named tools on different handoff agents may
+                # execute different implementations. Retain both sources.
+                artifact = tool_entry.get("_code_artifact")
+                if isinstance(artifact, dict):
+                    previous.setdefault("_code_artifacts", []).append(artifact)
+            _merge_server(servers, tool)
+            edges.append({"from": key, "to": tool_key, "kind": "tool"})
+        children, incomplete = handoff_agents(agent)
+        if incomplete:
+            _attach_callback_inventory(entry, CallbackInventory(incomplete=True))
+        for child in children:
+            visit(child, key)
+        _merge_server_specs(servers, _declared_servers(agent))
+        return key
+
+    root_key = visit(root, "input")
+    nodes.append({"id": "output", "label": "Output", "kind": "output"})
+    if root_key:
+        edges.append({"from": root_key, "to": "output"})
+    return "openai_agents", nodes, edges, list(tools.values()), list(servers.values())
 
 
 def _is_google_adk(obj: Any) -> bool:
@@ -1645,6 +1897,23 @@ def _from_temporal(
         )
         if artifact:
             node["_code_artifact"] = artifact
+        if inspect.isclass(workflow):
+            # Class source contains the methods themselves, but expanding each
+            # declared method also captures its referenced application helpers.
+            # No workflow instance is constructed and no method is executed.
+            methods = [
+                value.__func__ if isinstance(value, (staticmethod, classmethod)) else value
+                for value in vars(workflow).values()
+                if inspect.isfunction(value) or isinstance(value, (staticmethod, classmethod))
+            ]
+            node["_code_artifacts"] = [
+                _source_artifact(method, subject_kind="agent", subject_key=key)
+                for method in methods[:_CODE_ARTIFACT_MAX_COUNT]
+            ]
+            if len(methods) > _CODE_ARTIFACT_MAX_COUNT:
+                node["_code_artifacts"].append(
+                    _source_artifact(None, subject_kind="agent", subject_key=key)
+                )
         nodes.append(node)
         edges.append({"from": "input", "to": key})
     if not agent_keys:
@@ -1716,13 +1985,6 @@ def _from_generic(obj: Any) -> tuple[str, list[dict], list[dict], list[dict], li
     except Exception:  # pragma: no cover - describe is already fail-soft
         framework, names, raw_edges, source_by_name = "generic", [], [], {}
 
-    # ``manifest.describe`` uses "crewai" as its catch-all framework, which is
-    # right for a bare list of CrewAI/LangChain tools but a lie for an object we
-    # could not identify at all - the Registry would file it under a framework
-    # the operator never used. Relabel only the genuinely unidentifiable case.
-    if framework == "crewai" and not names and _attr(obj, "tools") is None:
-        framework = "generic"
-
     raw_tools = obj if isinstance(obj, (list, tuple, set)) else _attr(obj, "tools", None)
     tool_items = _iter_tools(raw_tools)
     # A bare tool list has no agent of its own - name the holder after the
@@ -1745,6 +2007,10 @@ def _from_generic(obj: Any) -> tuple[str, list[dict], list[dict], list[dict], li
         # arbitrary unscanned agent nodes into a compatibility escape hatch.
         agent_node["executable"] = False
         agent_node["ref"] = "structural:generic-tool-holder"
+    if framework == "pydanticai":
+        from .integrations.pydanticai import executable_callbacks
+
+        _attach_callback_inventory(agent_node, executable_callbacks(obj, prefix=f"agent.{key}"))
     nodes: list[dict[str, Any]] = [
         {"id": "input", "label": "Input", "kind": "input"},
         agent_node,
@@ -2102,6 +2368,7 @@ def _manifest_tool(raw: Any) -> dict[str, Any]:
             _default_action(
                 name or key,
                 action_class=action_class,
+                tool_key=key,
                 schema_digest=str(tool.get("schema_digest") or ""),
                 description=str(tool.get("description") or ""),
             )
@@ -2123,6 +2390,7 @@ def _manifest_tool(raw: Any) -> dict[str, Any]:
             _default_action(
                 name or key,
                 action_class=action_class,
+                tool_key=key,
                 schema_digest=str(tool.get("schema_digest") or ""),
                 description=str(tool.get("description") or ""),
             )
@@ -2168,6 +2436,9 @@ def _manifest_action(
     risk = str(raw.get("risk") or "").strip().lower()
     if risk:
         action["risk"] = risk
+    required_permission = str(raw.get("required_permission_key") or "").strip()
+    if required_permission:
+        action["required_permission_key"] = required_permission
     schema_digest = str(raw.get("schema_digest") or default_schema).strip()
     if schema_digest:
         action["schema_digest"] = schema_digest[:500]
@@ -2195,12 +2466,16 @@ def _default_action(
     action_class: str,
     schema_digest: str = "",
     description: str = "",
+    tool_key: str = "",
 ) -> dict[str, Any]:
     """One callable tool is one discoverable operation by default."""
     raw: dict[str, Any] = {
         "key": "invoke",
         "name": f"Invoke {tool_name}",
         "action_class": action_class,
+        # This exact default is also used by engine._gaf_payload. It is a
+        # review request only; discovery never grants runtime access.
+        "required_permission_key": f"{tool_key or _key(tool_name)}:{action_class}",
         "schema_digest": schema_digest,
         "description": description,
     }
@@ -2345,10 +2620,17 @@ def _tool_callable(tool: Any) -> Any:
         for attr in (
             "func",
             "fn",
+            "function",
+            "_func",
+            "_tool_func",
+            "coroutine",
+            "async_fn",
             "_run",
             "_arun",
             "on_invoke_tool",
             "callable",
+            "run_json",
+            "run",
         ):
             candidate = _attr(holder, attr, None)
             if callable(candidate):
@@ -2426,7 +2708,7 @@ def _merge_server_specs(servers: dict[str, dict[str, Any]], specs: list[dict[str
 
 def _declared_servers(obj: Any) -> list[dict[str, Any]]:
     """MCP servers declared on the object itself (``mcp_servers`` on a graph /
-    crew / agent, whatever shape the adapter used)."""
+    team / agent, whatever shape the adapter used)."""
     out: list[dict[str, Any]] = []
     for attr in ("mcp_servers", "_mcp_servers", "servers"):
         raw = _attr(obj, attr, None)
@@ -2541,7 +2823,7 @@ def _network_name(obj: Any) -> str:
     for attr in ("name", "graph_name"):
         value = _attr(obj, attr, None)
         if isinstance(value, str) and value.strip():
-            if value.strip().lower() in ("langgraph", "stategraph", "crew", "agent"):
+            if value.strip().lower() in ("langgraph", "stategraph", "agent"):
                 continue
             return value.strip()
     return ""
@@ -2720,6 +3002,9 @@ def _wire_attested_payload(engine: Any, payload: dict[str, Any]) -> dict[str, An
     against a low-entropy redacted literal. This is confidentiality hardening,
     not provenance proof: the runtime reporter controls both source and token.
     """
+    from .managed_execution import augment_worker_manifest
+
+    payload = augment_worker_manifest(engine, payload)
     artifacts = [
         dict(item)
         for item in _as_seq(payload.get("code_artifacts"))
@@ -2785,7 +3070,7 @@ def discover(
 ) -> dict[str, Any]:
     """Report ``obj``'s topology to ``/api/agentic-new/registry/discover``.
 
-    Pass a compiled graph / uncompiled builder / crew / agent as ``obj``, or a
+    Pass a compiled graph / uncompiled builder / team / agent as ``obj``, or a
     pre-built payload as ``manifest`` (normalised + re-digested so it dedupes
     like any other topology). ``principal_email`` attaches the human the run is
     acting for (the server resolves it to a ``user:…`` subject);
@@ -2793,10 +3078,8 @@ def discover(
     ``tool → server`` tuples through the audited relationship store.
 
     ``framework`` overrides the auto-detected label. Detection reads an
-    object's shape, so a bare list of callables is indistinguishable from a
-    list of CrewAI tools and is reported as ``crewai``. Pass this when you know
-    what the agent actually is, so the Registry does not file it under a
-    framework the operator never used.
+    object's shape, so a bare list of tools or callables is reported as
+    ``generic``. Pass this when you know which framework owns the agent.
 
     Default is fire-and-forget on a **daemon** thread with a 3s timeout, so an
     explicit inventory report stays off the invocation path and never holds up
@@ -2807,8 +3090,12 @@ def discover(
     """
     if obj is None and not isinstance(manifest, dict):
         return {"dispatched": False, "error": "registry_discovery_empty"}
+    from .runtime import security_enabled
+
+    if sync and not security_enabled(engine):
+        return {"dispatched": False, "skipped": True, "security_enabled": False}
     # describe_network never raises, but keep the belt-and-braces guard: this is
-    # called from inside a framework's compile()/kickoff() and must not surface
+    # called from inside a framework's compile()/run() and must not surface
     # anything to the developer's code.
     try:
         source = manifest if isinstance(manifest, dict) else obj
@@ -2816,10 +3103,23 @@ def discover(
     except Exception as exc:  # pragma: no cover - describe_network is fail-soft
         log.debug("registry discovery skipped (describe failed: %s)", exc)
         return {"dispatched": False, "error": "registry_discovery_invalid"}
+    # A program whose server run ended because its identity cannot use one was
+    # approved with the fingerprint of the program it submitted. When the
+    # gateway asks for it, the program reports exactly that manifest, built
+    # from the program described once, as a submission describes it: a manifest
+    # handed over (report_topology describes the object first) is taken as it
+    # is, because describing it again adds a node for each tool the graph names
+    # outside its nodes, which a submission never reports.
+    from .managed_execution import program_bundle_manifest
+
+    submitted = program_bundle_manifest(engine, source if isinstance(source, dict) else payload)
+    if submitted is not None:
+        payload = submitted
 
     digest = str((payload.get("network") or {}).get("digest") or "")
     network_key = str((payload.get("network") or {}).get("key") or "")
     payload["auto_provision"] = bool(auto_provision)
+    _attach_registered_by(engine, payload)
     if principal_email:
         payload["principal"] = {"email": principal_email.strip().lower()}
     elif "principal" not in payload and not _bootstrap_without_workload_proof:
@@ -2887,7 +3187,7 @@ def discover(
             bootstrap_without_workload_proof=_bootstrap_without_workload_proof,
         )
         if result.get("error"):
-            _log_enrolment_state(result)
+            _log_enrolment_state(result, engine)
             _unmark(dedupe_key)
         else:
             _mark_registration_capture_ready(engine, payload)
@@ -2979,46 +3279,105 @@ def _unmark(dedupe_key: str) -> None:
         _seen.pop(dedupe_key, None)
 
 
-# Remedies keyed by the enrolment lifecycle code the server returns. Each names
-# the ONE thing the developer has to do; a code with no entry is left alone
-# rather than guessed at.
-_ENROLMENT_REMEDIES = {
-    "agent_registration_pending": (
-        "waiting for an administrator to approve its registration"
-    ),
-    "agent_registration_denied": (
-        "its registration was denied; enrol under a different agent name"
-    ),
-    "agent_blueprint_review_pending": (
-        "its code changed and the new blueprint is awaiting review"
-    ),
-    "agent_blueprint_review_denied": (
-        "its code changed and the new blueprint was rejected"
-    ),
-    "blueprint_coverage_incomplete": (
-        "discovery could not read the source of every declared tool; "
-        "pass the tool callables rather than the agent instance"
-    ),
-    "agent_not_registered": (
-        "no registration exists for this agent on this virtual key"
-    ),
-    "agent_quarantined": (
-        "the agent is quarantined; review its blueprint scan to restore it"
-    ),
-    # The remedy is the whole point of this code: the name IS taken, by a row
-    # this key does not own, and the fix is to pick a different one. A bare
-    # 403 sent developers looking at the key instead.
-    "agent_name_conflict": (
-        "an agent of this name already exists on another key; choose a "
-        "different agent_name (or DEEPINTSHIELD_AGENT_NAME)"
-    ),
-}
+def _attach_registered_by(engine: Any, payload: dict[str, Any]) -> dict[str, Any]:
+    """Name the registering developer on a discover payload, when configured.
+
+    ``registered_by_email`` is a top-level sibling of ``principal`` and
+    ``auto_provision``: the gateway drops ``principal`` for pending reporters,
+    and the registrant is not the acting-for identity anyway. Omitted when
+    the client has no registering e-mail, so older gateways and unconfigured
+    clients keep today's payload byte for byte.
+
+    ``registered_by_source`` says where that address came from and is sent
+    only beside it: ``explicit`` for the ``registered_by`` setting, which the
+    gateway maps to an identity in the workspace directory and notifies, and
+    ``requester`` for an address derived from an e-mail-shaped requester, a
+    fallback the gateway ignores, without refusing, for people the
+    organization has not placed in the workspace. The address is not verified
+    and grants nothing: the administrator confirms the owner, and one
+    registration keeps its first address. This one function serves every
+    discover payload the SDK builds: the attested report, the first-run
+    minimal manifest and the server-run bundle manifest.
+    """
+    try:
+        email = str(getattr(engine, "registered_by_email", "") or "").strip()
+    except Exception:
+        email = ""
+    if email:
+        try:
+            source = str(getattr(engine, "registered_by_source", "") or "").strip().lower()
+        except Exception:
+            source = ""
+        payload["registered_by_email"] = email
+        # An engine that names an address without saying where it came from
+        # set it deliberately. The gateway reads an absent source the same way.
+        payload["registered_by_source"] = (
+            source if source in _REGISTERED_BY_SOURCES else _REGISTERED_BY_EXPLICIT
+        )
+        return payload
+    # This client names no registrant. A caller-built manifest may carry its
+    # own address; a source survives only beside it, and only as a known value.
+    carried = payload.get("registered_by_email")
+    source = payload.get("registered_by_source")
+    if (
+        not isinstance(carried, str)
+        or not carried.strip()
+        or not isinstance(source, str)
+        or source not in _REGISTERED_BY_SOURCES
+    ):
+        payload.pop("registered_by_source", None)
+    return payload
+
+
+# Report known enrolment blockers using the same trusted text as exceptions.
+# Unknown states and transport failures do not produce lifecycle warnings.
+_ENROLMENT_CODES = frozenset({
+    "agent_registration_pending",
+    "agent_runtime_enrollment_pending",
+    "registration_requester_mismatch",
+    "agent_registration_denied",
+    "agent_blueprint_review_pending",
+    "agent_blueprint_review_denied",
+    "blueprint_coverage_incomplete",
+    "agent_not_registered",
+    "agent_quarantined",
+    "agent_name_conflict",
+})
 
 _enrolment_logged: set[str] = set()
 _enrolment_log_lock = threading.Lock()
+# Set while a discovery report asks for workload proof. A registration state
+# met there is reported once the sighting has been answered, because that
+# answer is where the gateway names the address it will notify. Printed
+# earlier, the one line a process prints would lack the sentence that the
+# error raised a moment later carries.
+_enrolment_log_deferred: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "deepintshield_enrolment_log_deferred", default=False
+)
 
 
-def _log_enrolment_state(result: Any) -> None:
+@contextlib.contextmanager
+def _deferred_enrolment_log():
+    token = _enrolment_log_deferred.set(True)
+    try:
+        yield
+    finally:
+        _enrolment_log_deferred.reset(token)
+
+
+def _report_deferred_enrolment(engine: Any, errors: list[BaseException]) -> None:
+    """Print the registration line held back while ``errors`` were raised."""
+    observe = getattr(engine, "_observe_registration_error", None)
+    if not callable(observe):
+        return
+    for error in errors:
+        try:
+            observe(error)
+        except Exception:  # pragma: no cover - diagnostics never raise
+            pass
+
+
+def _log_enrolment_state(result: Any, engine: Any = None) -> None:
     """Say plainly, once per process per state, that governed calls will fail.
 
     A developer's first signal that enrolment is pending, denied or quarantined
@@ -3030,27 +3389,54 @@ def _log_enrolment_state(result: Any) -> None:
 
     Only enrolment LIFECYCLE codes are reported. Transport failures are
     ordinary, already logged at debug, and would otherwise turn a flaky network
-    into a stream of alarming warnings.
+    into a stream of alarming warnings. Registration states render the
+    developer line (reference, runtime-key thumbprint, notification e-mail)
+    from validated values only; the gateway's prose and review links are
+    never printed. The notification sentence is printed only for an address
+    the gateway echoed, never for the locally configured one.
     """
     if not isinstance(result, dict):
         return
     code = str(result.get("error") or "").strip()
-    remedy = _ENROLMENT_REMEDIES.get(code)
-    if remedy is None:
+    if code not in _ENROLMENT_CODES:
+        return
+    definition = get_error_definition(code)
+    if definition is None:
+        return
+    if code in _REGISTRATION_MESSAGE_CODES and _enrolment_log_deferred.get():
+        # The discovery report in progress repeats this call when its
+        # sighting has been answered (see ``_post_discover``).
         return
     with _enrolment_log_lock:
         if code in _enrolment_logged:
             return
         _enrolment_logged.add(code)
-    review_url = str(result.get("review_url") or "").strip()
-    suffix = f" Review: {review_url}" if review_url else ""
-    log.warning(
-        "DeepintShield: this agent is not governed yet - %s (%s)."
-        " Governed calls will be denied until this is resolved.%s",
-        remedy,
-        code,
-        suffix,
-    )
+    message = definition.description
+    if code in _REGISTRATION_MESSAGE_CODES:
+        context = None
+        resolver = getattr(engine, "_registration_context", None)
+        if callable(resolver):
+            try:
+                context = resolver(result)
+            except Exception:
+                context = None
+        if not isinstance(context, dict):
+            # No engine memory to consult: read the gateway body alone. The
+            # notification address is the gateway's echo here as well.
+            registration = result.get("registration")
+            registration = registration if isinstance(registration, dict) else {}
+            context = {
+                "registration_id": result.get("reference") or registration.get("id") or result.get("registration_id") or "",
+                "key_thumbprint": result.get("runtime_key_thumbprint") or result.get("key_thumbprint") or "",
+                "notify_email": result.get("notify_email") or registration.get("requester_email") or "",
+            }
+        message = format_registration_message(
+            code,
+            reference=context.get("registration_id", ""),
+            thumbprint=context.get("key_thumbprint", ""),
+            email=context.get("notify_email", ""),
+        )
+    log.warning("DeepintShield: %s: %s", code, message)
 
 
 def _post_and_release(
@@ -3073,7 +3459,11 @@ def _post_and_release(
             bootstrap_without_workload_proof=bootstrap_without_workload_proof,
         )
         if result.get("error"):
-            _log_enrolment_state(result)
+            _log_enrolment_state(result, engine)
+            _unmark(dedupe_key)
+        elif result.get("skipped"):
+            # A disabled runtime never submitted a blueprint. Do not cache it
+            # as an attestation when security is enabled on a later run.
             _unmark(dedupe_key)
         else:
             succeeded = True
@@ -3224,11 +3614,15 @@ def _defer_registration_capture(engine: Any, tool_key: str) -> None:
 def _set_registration_capture_error(engine: Any, code: object) -> None:
     normalized = normalize_agentic_error_code(code, "")
     # Preserve only the stable first-run admission codes here. Other discovery
-    # failures keep the established blueprint_scan_unavailable fallback.
+    # failures keep the established blueprint_scan_unavailable fallback. An
+    # agent that is already being registered under a different e-mail is an
+    # admission outcome the developer must see as such, whichever framework
+    # boundary reached the gate.
     if normalized not in {
         "agent_registration_quota_exceeded",
         "agent_name_required",
         "blueprint_coverage_incomplete",
+        "registration_requester_mismatch",
     }:
         normalized = ""
     try:
@@ -3285,6 +3679,7 @@ def _minimal_registration_manifest(
                     "key": "invoke",
                     "name": "Invoke",
                     "action_class": infer_action_class(key),
+                    "required_permission_key": f"{key}:{infer_action_class(key)}",
                 }
             ],
             "_code_artifact": code_by_tool.get(key)
@@ -3412,11 +3807,14 @@ def ensure_registration_capture(
                 "agent_not_registered",
                 "agent_registration_pending",
                 "agent_registration_denied",
+                "registration_requester_mismatch",
             }
         ):
             # Enabled identity-backed agents reject the proof-less bootstrap.
             # Retry this same manifest once through the normal workload-proof
-            # path; unknown/pending/denied registrations never take this path.
+            # path; unknown/pending/denied registrations never take this path,
+            # and neither does a sighting the gateway has just refused because
+            # the agent is already being registered under a different e-mail.
             result = discover(engine, manifest=manifest, sync=True)
         succeeded = not bool(result.get("error"))
         if succeeded:
@@ -3493,6 +3891,63 @@ def _should_report(
         return True
 
 
+# Lifecycle codes for which a proof-less (virtual key + selector) sighting is
+# always the right fallback: the gateway cannot issue workload credentials for
+# an unknown, pending, denied or quarantined agent.
+#
+# ``agent_registration_pending`` is also what the engine raises when the
+# gateway offered a pending registration its provisional runtime key and this
+# process cannot hold or enrol one (``AgenticEngine._provisional_key_fallback``):
+# the missing runtime extra, an unaccepted gateway address or an unusable key
+# store. Those three codes are deliberately in neither set below. Read here
+# they would also hide a broken credential of a declared or approved identity,
+# which must keep stopping the report.
+_VK_ONLY_FALLBACK_CODES = frozenset({
+    "agent_not_registered",
+    "agent_registration_pending",
+    "agent_registration_denied",
+    "agent_quarantined",
+})
+# Credential failures that fall back to a proof-less sighting ONLY when the
+# registration is already known to be pending: a runtime key awaiting
+# authorization or a host identity this process does not have must not hide a
+# genuine credential failure of an approved, identity-backed agent.
+_PENDING_ONLY_FALLBACK_CODES = frozenset({
+    "agent_runtime_enrollment_pending",
+    "credential_exchange_failed",
+    "credential_host_identity_missing",
+})
+
+
+def _vk_only_fallback(engine: Any, exc: BaseException) -> bool:
+    """Whether ``exc`` (raised while acquiring workload proof) allows a VK-only sighting."""
+    code = str(getattr(exc, "code", "") or "")
+    if code in _VK_ONLY_FALLBACK_CODES:
+        return True
+    if code not in _PENDING_ONLY_FALLBACK_CODES:
+        return False
+    payload = getattr(exc, "payload", None)
+    payload = payload if isinstance(payload, dict) else {}
+    registration = payload.get("registration")
+    known = (
+        isinstance(registration, dict)
+        and str(registration.get("status") or "").strip().lower() == "pending"
+    )
+    if not known:
+        checker = getattr(engine, "_registration_known_pending", None)
+        if callable(checker):
+            try:
+                known = bool(checker())
+            except Exception:
+                known = False
+    if not known:
+        return False
+    note = getattr(engine, "_note_runtime_key", None)
+    if callable(note):
+        note(payload.get("key_thumbprint"))
+    return True
+
+
 def _post_discover(
     engine: Any,
     payload: dict[str, Any],
@@ -3510,20 +3965,46 @@ def _post_discover(
     fall back to the authenticated virtual key plus the canonical agent
     selector; the server permits those proof-less credentials only on this
     discovery route and creates a disabled, pending-registration profile.
+
+    A registration state met while asking for that proof is reported after
+    the sighting has been answered, whatever the answer, so the single line
+    a process prints carries everything the gateway said about it.
     """
+    held_back: list[BaseException] = []
     try:
+        return _post_discover_request(
+            engine,
+            payload,
+            timeout,
+            bootstrap_without_workload_proof=bootstrap_without_workload_proof,
+            held_back=held_back,
+        )
+    finally:
+        _report_deferred_enrolment(engine, held_back)
+
+
+def _post_discover_request(
+    engine: Any,
+    payload: dict[str, Any],
+    timeout: float,
+    *,
+    bootstrap_without_workload_proof: bool,
+    held_back: list[BaseException],
+) -> dict[str, Any]:
+    try:
+        from .runtime import security_enabled
+
+        if not security_enabled(engine):
+            return {"dispatched": False, "skipped": True, "security_enabled": False}
         if bootstrap_without_workload_proof:
             headers = engine._headers(include_agent_token=False)
         else:
             try:
-                headers = engine._headers(include_agent_token=True)
-            except GovernanceConfigurationError as exc:
-                if exc.code not in {
-                    "agent_not_registered",
-                    "agent_registration_pending",
-                    "agent_registration_denied",
-                    "agent_quarantined",
-                }:
+                with _deferred_enrolment_log():
+                    headers = engine._headers(include_agent_token=True, path=_DISCOVER_PATH)
+            except DeepIntShieldError as exc:
+                held_back.append(exc)
+                if not _vk_only_fallback(engine, exc):
                     raise
                 headers = engine._headers(include_agent_token=False)
         resp = engine._http.post(
@@ -3555,6 +4036,32 @@ def _post_discover(
         return {"dispatched": True, "error": "registry_discovery_unavailable"}
     if not isinstance(body, dict):
         return {"dispatched": True}
+    # The 202 envelope names the registration (id, state, requester). Keep it
+    # so a later pending error can cite the reference without another request.
+    note_registration = getattr(engine, "_note_registration", None)
+    if callable(note_registration):
+        try:
+            note_registration(body)
+        except Exception:
+            pass
+    if bootstrap_without_workload_proof and body.get("registration_state") == "pending":
+        # Capture creates the pending row before looking up credentials. Once
+        # its expected workload identity has been declared, the gateway can
+        # safely expose public token settings; submit that proof on this run.
+        # The retry is still discovery only and cannot approve the agent. A
+        # runtime key that is itself still pending, or a host identity this
+        # process lacks, leaves the filed sighting as the result.
+        clear_failure = getattr(engine, "_clear_credential_failure_cache", None)
+        if callable(clear_failure):
+            clear_failure()
+        try:
+            proof_headers = engine._headers(include_agent_token=True, path=_DISCOVER_PATH)
+        except DeepIntShieldError as exc:
+            if not _vk_only_fallback(engine, exc):
+                return {"dispatched": True, "error": exc.code}
+        else:
+            if proof_headers.get("X-Agent-Token"):
+                return _post_discover(engine, payload, timeout)
     # Dispatch is SDK transport metadata, not a field the gateway must echo.
     # Keep lifecycle errors below: submitting a report does not approve it.
     body = {**body, "dispatched": True}
@@ -3572,7 +4079,7 @@ def _post_discover(
     # the next invocation must repost the source so the zero-retention server
     # can retry without retaining application code between attempts.
     registration_state = str(body.get("registration_state") or "").strip().lower()
-    if registration_state:
+    if registration_state and not bootstrap_without_workload_proof:
         # Discovery may have atomically moved an unknown workload into pending
         # registration while another lifecycle worker was reading credentials.
         # Do not let that earlier short negative cache hide the newer precise

@@ -2,6 +2,8 @@
 
 Install deepintshield[langchain]. Both calls evaluate through the configured
 gateway; LangChain's async-to-sync delegation is filtered once per retrieval.
+For private corpora, the underlying retriever must enforce document permissions
+before returning documents. This wrapper evaluates content safety.
 """
 import asyncio
 

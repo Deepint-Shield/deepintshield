@@ -53,11 +53,14 @@ def build_client(shield: "DeepintShield", *, passthrough: bool = False, **kwargs
             event_hooks["request"] = request_hooks
             client_args["event_hooks"] = event_hooks
             setattr(options, args_attr, client_args)
-    return genai.Client(
+    native = genai.Client(
         api_key=kwargs.pop("api_key", shield.api_key()),
         http_options=options,
         **kwargs,
     )
+    from ..agentic.integrations.google_genai import bind_client
+
+    return bind_client(native, engine=shield.agentic.engine)
 
 
 def build_cached_client(

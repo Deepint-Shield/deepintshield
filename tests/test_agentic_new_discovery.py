@@ -219,7 +219,7 @@ def test_describe_network_builds_agents_tools_and_servers():
         {
             "key": "invoke",
             "name": "Invoke crm_read",
-            "description": "Read a CRM account",
+                "required_permission_key": "crm_read:read",            "description": "Read a CRM account",
             "action_class": "read",
         }
     ]
@@ -403,6 +403,116 @@ def test_blueprint_capture_keeps_executed_application_decorator_wrapper():
     assert "exec(state" in artifact["source"]
     assert "def reviewed_node" in artifact["source"]
     assert "code_artifacts_incomplete" not in payload
+
+
+@pytest.mark.parametrize("is_async", [False, True])
+def test_langgraph_guard_inside_application_tree_does_not_capture_sdk(
+    monkeypatch, is_async,
+):
+    from deepintshield.agentic.integrations.langgraph import _wrap_fn
+    from deepintshield.agentic.manifest import describe
+
+    def local_helper(state):
+        return {"value": state["value"] + 2}
+
+    def reviewed_node(state):
+        return local_helper(state)
+
+    # A script above an editable SDK checkout has both application and SDK
+    # files below its source root. Ordinary tests live in a sibling directory.
+    application_root = registry.os.path.commonpath((
+        registry._source_file(reviewed_node), registry.__file__,
+    ))
+    monkeypatch.setattr(registry, "_application_source_root", lambda _: application_root)
+    guarded = _wrap_fn(object(), "reviewed_node", reviewed_node, is_async=is_async)
+    graph = FakeGraph(nodes={"review": FakeNode(guarded)}, edges=[])
+
+    payload = registry.describe_network(graph)
+
+    assert len(payload["code_artifacts"]) == 2
+    assert all(entry["status"] == "captured" for entry in payload["code_artifact_coverage"])
+    assert "code_artifacts_incomplete" not in payload
+    for artifact in payload["code_artifacts"]:
+        assert "def reviewed_node" in artifact["source"]
+        assert "def local_helper" in artifact["source"]
+        assert "decision = resolve(" not in artifact["source"]
+    assert "reviewed_node" in describe(graph).tool_sources
+
+    def replacement_helper(state):
+        return eval(state["payload"])
+
+    # Exempting the SDK layer must not exempt its underlying application's
+    # dependency changes from the cached source and blueprint digest.
+    local_helper = replacement_helper
+    changed = registry.describe_network(graph)
+    assert changed["blueprint_digest"] != payload["blueprint_digest"]
+    assert all("eval(state" in artifact["source"] for artifact in changed["code_artifacts"])
+    assert "code_artifacts_incomplete" not in changed
+
+
+def test_application_wrapper_cannot_copy_langgraph_source_capture_exemption(monkeypatch):
+    from deepintshield.agentic.integrations.langgraph import _wrap_fn
+
+    def reviewed_node(state):
+        return state
+
+    guarded = _wrap_fn(object(), "reviewed_node", reviewed_node, is_async=False)
+
+    # functools.wraps copies all public SDK marker attributes to this distinct
+    # application function. Its executable source must still be reviewed.
+    @functools.wraps(guarded)
+    def application_wrapper(state):
+        exec(state["payload"])
+        return guarded(state)
+
+    application_root = registry.os.path.commonpath((
+        registry._source_file(reviewed_node), registry.__file__,
+    ))
+    monkeypatch.setattr(registry, "_application_source_root", lambda _: application_root)
+    payload = registry.describe_network(
+        FakeGraph(nodes={"review": FakeNode(application_wrapper)}, edges=[])
+    )
+
+    assert "code_artifacts_incomplete" not in payload
+    assert all("exec(state" in artifact["source"] for artifact in payload["code_artifacts"])
+    assert all("decision = resolve(" not in artifact["source"] for artifact in payload["code_artifacts"])
+
+
+@pytest.mark.parametrize("changed_binding", ["globals", "wrapped_target"])
+def test_reconstructed_langgraph_code_does_not_hide_changed_bindings(
+    monkeypatch, changed_binding,
+):
+    from types import FunctionType
+    from deepintshield.agentic.integrations.langgraph import _wrap_fn
+
+    def reviewed_node(state):
+        return state
+
+    def different_node(state):
+        return state["value"]
+
+    guarded = _wrap_fn(object(), "reviewed_node", reviewed_node, is_async=False)
+    reconstructed = FunctionType(
+        guarded.__code__,
+        dict(guarded.__globals__) if changed_binding == "globals" else guarded.__globals__,
+        guarded.__name__,
+        guarded.__defaults__,
+        guarded.__closure__,
+    )
+    reconstructed.__dict__.update(vars(guarded))
+    if changed_binding == "wrapped_target":
+        reconstructed.__wrapped__ = different_node
+    application_root = registry.os.path.commonpath((
+        registry._source_file(reviewed_node), registry.__file__,
+    ))
+    monkeypatch.setattr(registry, "_application_source_root", lambda _: application_root)
+
+    payload = registry.describe_network(
+        FakeGraph(nodes={"review": FakeNode(reconstructed)}, edges=[])
+    )
+
+    assert payload["code_artifacts"]
+    assert all("decision = resolve(" in artifact["source"] for artifact in payload["code_artifacts"])
 
 
 def test_secret_only_source_drift_changes_self_attestation_not_wire_source():
@@ -688,21 +798,6 @@ def test_generic_callable_declares_exact_executable_code_coverage():
 # ── every input shape describe_network must accept (guarantee 2) ──────────
 
 
-class FakeCrewAgent:
-    def __init__(self, role: str, tools: list, model: str = "") -> None:
-        self.role = role
-        self.tools = tools
-        self.llm = model
-
-
-class FakeCrew:
-    """CrewAI Crew shape: `.agents` list + a `.tasks` attribute."""
-
-    def __init__(self, agents: list) -> None:
-        self.agents = agents
-        self.tasks = []
-
-
 class FakeBuilder:
     """Uncompiled StateGraph shape: dict `.nodes`, a SET of `.edges` and the
     conditional hops in `.branches` rather than in `.edges`."""
@@ -761,25 +856,6 @@ def test_describe_network_handles_an_uncompiled_builder_including_branches():
     assert {"from": "act", "to": "output"} in net["edges"]
 
 
-def test_describe_network_handles_a_crewai_crew():
-    net = registry.describe_network(
-        FakeCrew([
-            FakeCrewAgent("Researcher", [FakeTool("search_docs")], model="gpt-4o"),
-            FakeCrewAgent("Writer", [FakeTool("publish_post")]),
-        ]),
-        name="Content Crew",
-    )
-
-    assert net["framework"] == "crewai"
-    assert net["network"]["key"] == "content-crew"
-    agents = {a["key"]: a for a in net["agents"]}
-    assert set(agents) == {"researcher", "writer"}
-    assert agents["researcher"]["model"] == "gpt-4o"
-    assert agents["researcher"]["capabilities"] == ["search_docs"]
-    tools = {t["key"]: t["action_class"] for t in net["tools"]}
-    assert tools == {"search_docs": "read", "publish_post": "write"}
-
-
 def test_describe_network_normalises_a_plain_dict_manifest():
     """A dict is a manifest, never an object to introspect: the generic path used
     to stringify the whole mapping into one bogus `tool:` node."""
@@ -833,7 +909,7 @@ def test_manifest_normalises_legacy_server_key_to_go_server_field():
                 {
                     "key": "invoke",
                     "name": "Invoke crm_read",
-                    "action_class": "read",
+                "required_permission_key": "crm_read:read",                    "action_class": "read",
                     "schema_digest": "schema-1",
                 }
             ],
@@ -899,7 +975,7 @@ def test_actionless_manifest_gets_a_conservative_invoke_action():
         {
             "key": "invoke",
             "name": "Invoke legacy_tool",
-            "action_class": "write",
+            "required_permission_key": "legacy_tool:write",            "action_class": "write",
         }
     ]
 
@@ -926,7 +1002,7 @@ def test_actionless_live_tool_gets_a_conservative_invoke_action():
         {
             "key": "invoke",
             "name": "Invoke opaque_runner",
-            "action_class": "write",
+            "required_permission_key": "opaque_runner:write",            "action_class": "write",
         }
     ]
 
@@ -999,14 +1075,10 @@ def test_generic_fallback_never_registers_a_memory_address():
     }
 
 
-def test_generic_fallback_does_not_mislabel_an_unknown_object_as_crewai():
-    """`describe` uses "crewai" as its catch-all, which is right for a bare tool
-    list but files an unidentifiable object under a framework the operator never
-    used."""
+def test_generic_fallback_keeps_plain_objects_and_tool_lists_framework_neutral():
     assert registry.describe_network(object())["framework"] == "generic"
     assert registry.describe_network(None)["framework"] == "generic"
-    # …while a genuine bare tool list keeps its framework.
-    assert registry.describe_network([FakeTool("send_email")])["framework"] == "crewai"
+    assert registry.describe_network([FakeTool("send_email")])["framework"] == "generic"
 
 
 @pytest.mark.parametrize("scalar", [None, 42, 3.5, True, "a-string", b"bytes"])

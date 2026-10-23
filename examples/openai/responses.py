@@ -1,6 +1,6 @@
 """GPT-6 Astra through the gateway's native OpenAI Responses API.
 
-Install: pip install 'deepintshield[openai]'
+Install: pip install 'deepintshield[openai]==3.2.0'
 Set DEEPINTSHIELD_VIRTUAL_KEY and optionally DEEPINTSHIELD_BASE_URL.
 Run: python examples/openai/responses.py [--stream]
 

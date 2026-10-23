@@ -68,3 +68,34 @@ def test_from_env_prefers_canonical_base_url(monkeypatch):
     cfg = ShieldConfig.from_env()
 
     assert cfg.base_url == "https://canonical.example.com"
+
+
+def test_from_env_reads_registered_by(monkeypatch):
+    monkeypatch.setenv("DEEPINTSHIELD_REGISTERED_BY", "  Alice@Corp.com ")
+
+    cfg = ShieldConfig.from_env()
+
+    assert cfg.registered_by == "alice@corp.com"
+
+
+def test_from_env_registered_by_unset_is_none(monkeypatch):
+    monkeypatch.delenv("DEEPINTSHIELD_REGISTERED_BY", raising=False)
+
+    cfg = ShieldConfig.from_env()
+
+    assert cfg.registered_by is None
+    assert ShieldConfig().registered_by is None
+
+
+def test_from_env_registered_by_invalid_raises_annotated_error(monkeypatch):
+    import pytest
+
+    from deepintshield.errors import get_exception_error_code
+
+    monkeypatch.setenv("DEEPINTSHIELD_REGISTERED_BY", "bad")
+
+    with pytest.raises(ValueError) as caught:
+        ShieldConfig.from_env()
+
+    assert get_exception_error_code(caught.value) == "configuration_error"
+    assert caught.value.details == {"environment_variable": "DEEPINTSHIELD_REGISTERED_BY"}

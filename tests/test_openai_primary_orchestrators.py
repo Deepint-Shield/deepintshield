@@ -41,10 +41,7 @@ async def test_google_adk_native_connector_gateway(shield_factory, monkeypatch, 
     from google.adk.models.llm_request import LlmRequest
     from google.genai import types
     from litellm.llms.openai.openai import OpenAIChatCompletion
-    from deepintshield.agentic.integrations import litellm as enforcement
-    # Focus on ADK/LiteLLM/OpenAI serialization; authorization is exercised by
-    # the existing fail-closed integration suite, without a running PDP here.
-    monkeypatch.setattr(enforcement, "_check", lambda kwargs, args: kwargs)
+    # Direct model inference must not require an Agentic registration.
     litellm.in_memory_llm_clients_cache.flush_cache()
     _, http = openai_backend()
     model = f"{provider}/new-release/deployment"

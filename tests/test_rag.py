@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 
 import httpx
+import pytest
 
-from deepintshield import RetrievedChunk, allowed_chunk_ids, build_chunk, filter_chunks
+from deepintshield import ErrorCode, RetrievedChunk, allowed_chunk_ids, build_chunk, filter_chunks
 
 
 def test_build_chunk_roundtrips_required_fields():
@@ -13,6 +15,67 @@ def test_build_chunk_roundtrips_required_fields():
     assert chunk.document_id == "d1"
     assert chunk.content == "hi"
     assert chunk.trust_score == 91
+
+
+@pytest.mark.parametrize("factory", [RetrievedChunk, build_chunk])
+@pytest.mark.parametrize("legacy_tags", [[], ["private-team"]])
+def test_chunk_constructors_reject_removed_access_flag(factory, legacy_tags):
+    with pytest.raises(TypeError, match="acl_tags"):
+        factory(content="private content", chunk_id="c", document_id="d", acl_tags=legacy_tags)
+
+
+@pytest.mark.parametrize("legacy_tags", [["private-team"], "private-team", "", {}, False, 0])
+def test_evaluate_rejects_removed_access_flag_before_network(shield_factory, legacy_tags):
+    def handler(request):
+        pytest.fail("Unsupported permission restrictions must fail before sending any content")
+
+    chunks = [{"chunk_id": "c", "document_id": "d", "content": "private content", "acl_tags": legacy_tags}]
+    originals = deepcopy(chunks)
+    shield = shield_factory(handler)
+
+    with pytest.raises(ValueError, match="Authorize document access") as exc:
+        shield.rag.evaluate(query="question", chunks=iter(chunks), source_id="qa-support")
+
+    assert exc.value.code == ErrorCode.INVALID_ARGUMENT.value
+    assert chunks == originals
+
+
+@pytest.mark.parametrize("legacy_tags", [None, []])
+def test_evaluate_strips_empty_legacy_placeholders_without_mutating_input(shield_factory, legacy_tags):
+    requests = []
+    chunks = [
+        RetrievedChunk("c1", "d1", "first content", labels=["support"], pii_flags=["email"]),
+        {"chunk_id": "c2", "document_id": "d2", "content": "second content", "acl_tags": legacy_tags},
+    ]
+    originals = deepcopy(chunks)
+
+    def handler(request):
+        requests.append(request)
+        body = json.loads(request.content)
+        assert body["source_id"] == "qa-support"
+        assert body["requester"] == "support-user"
+        assert body["requester_role"] == "analyst"
+        assert all("acl_tags" not in chunk for chunk in body["retrieved_chunks"])
+        assert body["retrieved_chunks"][0]["labels"] == ["support"]
+        assert body["retrieved_chunks"][0]["pii_flags"] == ["email"]
+        return httpx.Response(200, json={"result": {"final_action": "allow"}})
+
+    shield = shield_factory(handler)
+    shield.rag.evaluate(
+        query="question", chunks=iter(chunks), source_id="qa-support",
+        requester="support-user", requester_role="analyst",
+    )
+
+    assert len(requests) == 1
+    assert chunks == originals
+
+
+def test_chunk_payload_omits_removed_access_flag():
+    chunk = RetrievedChunk("c", "d", "safe content", labels=["support"], pii_flags=["email"])
+    payload = chunk.to_payload()
+    assert "acl_tags" not in payload
+    assert payload["labels"] == ["support"]
+    assert payload["pii_flags"] == ["email"]
 
 
 def test_allowed_chunk_ids_reads_trace():

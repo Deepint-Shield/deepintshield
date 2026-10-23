@@ -39,6 +39,7 @@ import contextvars
 import hashlib
 import logging
 import os
+import re
 import threading
 import time
 import uuid
@@ -47,10 +48,18 @@ from typing import TYPE_CHECKING, Optional
 
 import httpx
 
+from ..config import _REGISTERED_BY_EXPLICIT, _REGISTERED_BY_REQUESTER, _email_shaped
 from ..errors import DeepintShieldError as SDKConfigurationError
+from ..errors import get_exception_error_code
 from .actions import infer_action_class
 from .credentials.base import AgentCredential, StaticAgentCredential
 from .errors import (
+    _REGISTRATION_EMAIL_MAX_LENGTH,
+    _REGISTRATION_EMAIL_RE,
+    _REGISTRATION_MESSAGE_CODES,
+    _REGISTRATION_REFERENCE_RE,
+    _RUNTIME_KEY_THUMBPRINT_RE,
+    _registration_fragment,
     AGENT_APPROVAL_PENDING,
     AGENT_CONFIGURATION_ERROR,
     AGENT_GATEWAY_UNAVAILABLE,
@@ -60,6 +69,7 @@ from .errors import (
     GovernanceConfigurationError,
     GuardrailApprovalPending,
     normalize_agentic_error_code,
+    public_agentic_error_details,
 )
 from .identity import PrincipalBinding
 from .registry import _registry_key as _manifest_registry_key
@@ -70,6 +80,78 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 _PRINCIPAL_UNSET = object()
+# Best-effort transport runs on every LLM request; a broken host credential
+# would otherwise repeat the same warning per call. Each code prints once per
+# process, like the registry's enrolment lifecycle line.
+_credential_failure_logged: set[str] = set()
+_credential_failure_log_lock = threading.Lock()
+_REGISTRATION_STATE_RE = re.compile(r"^[a-z][a-z_]{0,31}$")
+_REGISTRATION_SUBJECT_RE = re.compile(r"^agent:[A-Za-z0-9][A-Za-z0-9:_.-]{0,191}$")
+_REGISTRATION_PENDING_CODE = "agent_registration_pending"
+# Why a provisional runtime key can be unusable in this process: the runtime
+# extra is not installed, the gateway address or its broker settings are not
+# ones the credential accepts, or the key store cannot hold the key. Only for
+# the gateway's provisional offer to a pending registration do these mean
+# "still pending"; anywhere else they surface unchanged.
+_PROVISIONAL_KEY_UNUSABLE_CODES = frozenset(
+    {
+        "credential_dependency_missing",
+        "agent_runtime_configuration_error",
+        "agent_runtime_key_unavailable",
+    }
+)
+# The one refusal of a provisional runtime key that makes the engine ask for
+# the agent's credential settings again: the gateway no longer accepts that
+# key at enrolment or challenge, which is what an administrator's decision
+# (a VK-trusted approval, a denial, an identity declared elsewhere) leaves
+# behind. Every other failure, including an outage, a 429, a conflict and a
+# key still waiting for authorization, surfaces unchanged.
+_RUNTIME_AUTHENTICATION_FAILED = "agent_runtime_authentication_failed"
+_PROVISIONAL_REREAD_ENDPOINTS = frozenset({"enroll", "challenge"})
+# A credential the gateway marked optional (``credential_optional``) that
+# failed is not tried again for this long, so an approved agent running on its
+# virtual key does not repeat a failing build or enrolment on every call.
+_OPTIONAL_CREDENTIAL_RETRY_SECONDS = 60.0
+# One line per process and agent says that the agent runs on its virtual key.
+_optional_credential_logged: set[str] = set()
+_optional_credential_log_lock = threading.Lock()
+
+
+def _log_credential_failure(error: BaseException, fallback_code: str) -> None:
+    """Log trusted guidance once per process per code, never provider prose."""
+    details = public_agentic_error_details(
+        get_exception_error_code(error)
+        or ("credential_dependency_missing" if isinstance(error, ImportError) else fallback_code)
+    )
+    payload = getattr(error, "payload", None)
+    if (
+        details["code"] in _REGISTRATION_MESSAGE_CODES
+        and isinstance(payload, dict)
+        and "registration_context" in payload
+    ):
+        # The engine already reported this registration state with its
+        # reference, key thumbprint and notification e-mail. Repeating it in
+        # the generic form would give the developer two lines for one state.
+        return
+    with _credential_failure_log_lock:
+        if details["code"] in _credential_failure_logged:
+            return
+        _credential_failure_logged.add(details["code"])
+    message = details["message"]
+    action = details["action"]
+    if action and not message.endswith(action):
+        message = f"{message} {action}"
+    log.warning("DeepintShield: %s (%s)", message, details["code"])
+
+
+def _first_fragment(pattern: "re.Pattern[str]", limit: int, *candidates: object) -> str:
+    for candidate in candidates:
+        value = candidate.lower() if pattern is _REGISTRATION_EMAIL_RE and isinstance(candidate, str) else candidate
+        fragment = _registration_fragment(value, pattern, limit)
+        if fragment:
+            return fragment
+    return ""
+
 
 _DISCOVERY_TTL_SECONDS = 3600.0
 # Several execution/identity consumers may request the same credential binding
@@ -94,6 +176,10 @@ _BLUEPRINT_CONFIGURATION_CODES = frozenset(
     }
 )
 _ENDPOINT_PROBE_TTL_SECONDS = 60.0
+_AGENTIC_INCLUDED_PLANS = frozenset(
+    {"business", "enterprise", "enterprise-vpc", "enterprise_vpc"}
+)
+_AGENTIC_EXCLUDED_PLANS = frozenset({"community", "developer", "team"})
 _GAF_FIELDS = frozenset(
     {
         "agent",
@@ -146,6 +232,28 @@ class AgenticEngine:
         self._cred_info_failure_code = ""
         self._cred_info_failure_at = 0.0
         self._agent_credential: Optional[AgentCredential] = agent_credential
+        # The credential this engine built from the gateway's provisional offer
+        # to a pending registration, while it is the active one. Only its
+        # failure to enrol can be read as the plain pending state; a supplied
+        # or declared-identity credential never is.
+        self._provisional_credential: Optional[AgentCredential] = None
+        # The credential this engine built itself from a credential-info
+        # answer, while it is the active one (never one the application
+        # supplied), and when such a credential last failed under an answer
+        # the gateway marked ``credential_optional`` (with that answer). Only
+        # the server-sent flag makes a failure non-fatal; see
+        # ``_optional_credential_failure``.
+        self._built_credential: Optional[AgentCredential] = None
+        self._optional_credential_failed_at = 0.0
+        self._optional_credential_failed_for: Optional[VKCredentialInfo] = None
+        # Provisional credentials set aside after the gateway refused their
+        # key, so a concurrent call that met the same refusal reads the new
+        # answer instead of surfacing it (see _set_aside_refused_provisional_key).
+        self._set_aside_credentials: "weakref.WeakSet[object]" = weakref.WeakSet()
+        # Whether this process can hold and use a gateway runtime key. None
+        # until first asked, then fixed for the engine's lifetime: it is
+        # judged from local facts alone (see ``_runtime_key_capable``).
+        self._runtime_key_capability: Optional[bool] = None
         # Credential discovery/build is lazy and shared by every gated call.
         # An RLock makes the first fetch/build single-flight under concurrent
         # agent invocations while allowing agent_credential → credential_info.
@@ -160,6 +268,30 @@ class AgenticEngine:
         self._agent_subject_selector = f"agent:{agent_key}" if agent_key else ""
         requester = str(getattr(parent, "requester", "") or "").strip()
         self._requester_hint = "" if requester == "sdk-user" else requester
+        # The registering developer: an explicit ``registered_by`` (possibly
+        # "" for none), else an e-mail-shaped requester. Snapshotted like the
+        # agent selector so a mutated parent cannot change the registrant of
+        # an already filed sighting. The source travels with the address: the
+        # gateway maps an explicit registrant to an identity in the workspace
+        # directory and notifies it, and uses a requester-derived one only as
+        # a fallback, because ``requester`` may name an end user the
+        # organization has not placed in the workspace. Neither is verified,
+        # and neither grants anything.
+        registered_by = getattr(parent, "registered_by", None)
+        registered_by_source = _REGISTERED_BY_EXPLICIT
+        if registered_by is None:
+            registered_by = _email_shaped(self._requester_hint)
+            registered_by_source = _REGISTERED_BY_REQUESTER
+        self._registered_by_email = str(registered_by or "")
+        self._registered_by_source = (
+            registered_by_source if self._registered_by_email else ""
+        )
+        # What the gateway told this process about its registration: reference,
+        # state and the enrolled runtime key. Pure memory, filled from response
+        # bodies the SDK already reads; it never triggers a request.
+        self._registration_reference: dict[str, str] = {}
+        self._runtime_key_thumbprint = ""
+        self._registration_memory_lock = threading.Lock()
         self._default_principal: Optional[PrincipalBinding] = None
         self._default_principal_lock = threading.Lock()
         self._approval_timeout = approval_poll_timeout_seconds
@@ -279,6 +411,240 @@ class AgenticEngine:
         self._principal_context.reset(token)  # type: ignore[arg-type]
 
     @property
+    def registered_by_email(self) -> str:
+        """The developer filing this agent's registration; ``""`` when none."""
+        return self._registered_by_email
+
+    @property
+    def registered_by_source(self) -> str:
+        """Where :attr:`registered_by_email` came from; ``""`` when there is none.
+
+        ``"explicit"`` for the ``registered_by`` setting
+        (``DEEPINTSHIELD_REGISTERED_BY``), which the gateway maps to an
+        identity in the workspace directory and notifies; ``"requester"`` for
+        an address derived from an e-mail-shaped ``requester``, a fallback the
+        gateway ignores, without refusing, for people the organization has not
+        placed in the workspace. The address is not verified and grants
+        nothing: the administrator confirms the owner.
+        """
+        return self._registered_by_source
+
+    # ──────────────────────────────────────────────────────────────────
+    # Registration memory (no network)
+    # ──────────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _registration_identity(body: dict, registration: dict) -> str:
+        """The registration a gateway body is about, by the id of its row."""
+        return _first_fragment(
+            _REGISTRATION_REFERENCE_RE, 128,
+            registration.get("id"), body.get("registration_id"), body.get("reference"),
+        )
+
+    def _note_registration(self, body: object) -> None:
+        """Remember the registration a gateway body describes.
+
+        Accepts a 202 discover envelope (``registration``/``registration_state``),
+        a 409/403 credential-info body (``error`` + ``registration``), a
+        ``registry/self`` body (``state``/``registration_id``) and the runtime
+        broker's pending payload (``registration_id``). Every value is
+        validated; nothing else in the body is retained.
+
+        ``notify_email`` is remembered only from the gateway: ``notify_email``
+        on a 409 or ``registry/self`` body, ``registration.requester_email`` on
+        a 202 body. It is the gateway's confirmation that this registration has
+        a recorded address to notify, and the only source of the "You will be
+        notified at ..." sentence.
+        """
+        if not isinstance(body, dict):
+            return
+        registration = body.get("registration")
+        if not isinstance(registration, dict):
+            registration = {}
+        reference = self._registration_identity(body, registration)
+        # The reference the gateway prints for the developer. It is the row id
+        # under the current contract; when a gateway shows something else, the
+        # shown value is what later messages about this registration repeat.
+        shown_reference = _first_fragment(
+            _REGISTRATION_REFERENCE_RE, 128, body.get("reference"),
+        )
+        state = _first_fragment(
+            _REGISTRATION_STATE_RE, 32,
+            *(
+                value.strip().lower() if isinstance(value, str) else value
+                for value in (
+                    body.get("registration_state"), registration.get("status"), body.get("state"),
+                )
+            ),
+        )
+        agent_subject = _first_fragment(
+            _REGISTRATION_SUBJECT_RE, 198,
+            registration.get("agent_subject"), body.get("agent_subject"),
+        )
+        notify_email = _first_fragment(
+            _REGISTRATION_EMAIL_RE, _REGISTRATION_EMAIL_MAX_LENGTH,
+            body.get("notify_email"), registration.get("requester_email"),
+        )
+        if reference or state or agent_subject or notify_email:
+            with self._registration_memory_lock:
+                memory = dict(self._registration_reference)
+                if reference:
+                    if memory.get("registration_id") not in (None, reference):
+                        # A different registration. The address the gateway
+                        # confirmed and the reference it showed belonged to
+                        # the earlier one; each is kept only when this body
+                        # states it again below.
+                        memory.pop("notify_email", None)
+                        memory.pop("reference", None)
+                    memory["registration_id"] = reference
+                    if shown_reference and shown_reference != reference:
+                        memory["reference"] = shown_reference
+                    elif shown_reference:
+                        memory.pop("reference", None)
+                if state:
+                    memory["state"] = state
+                if agent_subject:
+                    memory["agent_subject"] = agent_subject
+                if notify_email:
+                    memory["notify_email"] = notify_email
+                self._registration_reference = memory
+        self._note_runtime_key(body.get("runtime_key_thumbprint"))
+
+    def _note_runtime_key(self, thumbprint: object) -> None:
+        """Remember the enrolled runtime key's RFC 7638 thumbprint."""
+        value = _registration_fragment(thumbprint, _RUNTIME_KEY_THUMBPRINT_RE, 43)
+        if value:
+            self._runtime_key_thumbprint = value
+
+    def _registration_known_pending(self) -> bool:
+        """Whether the gateway has already told this process the row is pending.
+
+        A ``credential_bootstrap`` block is read as pending unless the gateway
+        marked it ``credential_optional``: that block belongs to an approved
+        agent running on its virtual key. Nothing but that server-sent flag
+        changes the reading, and a block that says ``registration_state:
+        pending`` is pending whatever else it says.
+        """
+        if self._registration_reference.get("state") == "pending":
+            return True
+        if self._cred_info_failure_code == "agent_registration_pending":
+            return True
+        info = self._cred_info
+        if info is not None and (
+            (info.credential_bootstrap is True and not self._credential_optional(info))
+            or str(info.registration_state or "").strip().lower() == "pending"
+        ):
+            return True
+        return False
+
+    def _registration_context(self, payload: object = None) -> dict[str, str]:
+        """Validated reference/thumbprint/notification address for the developer message.
+
+        A gateway echo in ``payload`` (``reference``, ``runtime_key_thumbprint``,
+        ``notify_email``, the 202 ``registration`` object) wins over memory. The
+        reference and the runtime-key thumbprint then fall back to what this
+        process knows itself. A reference the gateway showed earlier for the
+        same registration is repeated when ``payload`` carries none, so every
+        message about one registration cites one reference.
+
+        ``notify_email`` never does. It is the address the gateway confirmed it
+        will notify, from this body or an earlier one about the same
+        registration, and is empty when the gateway confirmed none. The local
+        ``registered_by`` setting is deliberately not consulted: a gateway that
+        predates the field, or one that set aside a requester-derived address,
+        sends no e-mail, and the message must not promise one.
+        """
+        body = payload if isinstance(payload, dict) else {}
+        registration = body.get("registration")
+        if not isinstance(registration, dict):
+            registration = {}
+        memory = self._registration_reference
+        try:
+            credential_thumbprint = getattr(self._agent_credential, "key_thumbprint", "")
+        except Exception:
+            credential_thumbprint = ""
+        # A remembered confirmation speaks for the registration it was given
+        # for, not for another one this body may name. Identity is compared
+        # the way it was remembered; the reference shown below may be a
+        # different field of the same body.
+        named = self._registration_identity(body, registration)
+        same_registration = not named or memory.get("registration_id") in (None, named)
+        remembered_notify_email = memory.get("notify_email") if same_registration else ""
+        # The reference the gateway showed for this registration earlier. A
+        # body that names the same registration without one, or no body at
+        # all (the short negative cache, the gate), cites the same reference
+        # the developer has already been given.
+        remembered_reference = memory.get("reference") if same_registration else ""
+        return {
+            "registration_id": _first_fragment(
+                _REGISTRATION_REFERENCE_RE, 128,
+                body.get("reference"), remembered_reference, registration.get("id"),
+                body.get("registration_id"), memory.get("registration_id"),
+            ),
+            "key_thumbprint": _first_fragment(
+                _RUNTIME_KEY_THUMBPRINT_RE, 43,
+                body.get("runtime_key_thumbprint"), body.get("key_thumbprint"),
+                self._runtime_key_thumbprint, credential_thumbprint,
+            ),
+            "notify_email": _first_fragment(
+                _REGISTRATION_EMAIL_RE, _REGISTRATION_EMAIL_MAX_LENGTH,
+                body.get("notify_email"), registration.get("requester_email"),
+                remembered_notify_email,
+            ),
+            "state": _first_fragment(
+                _REGISTRATION_STATE_RE, 32,
+                *(
+                    value.strip().lower() if isinstance(value, str) else value
+                    for value in (
+                        body.get("registration_state"), registration.get("status"),
+                        memory.get("state"),
+                    )
+                ),
+            ),
+        }
+
+    def _attach_registration_context(self, exc: BaseException) -> None:
+        """Give a registration-state error the context its public text needs."""
+        code = normalize_agentic_error_code(getattr(exc, "code", ""), "")
+        if code not in _REGISTRATION_MESSAGE_CODES:
+            return
+        payload = getattr(exc, "payload", None)
+        if not isinstance(payload, dict):
+            payload = {}
+            try:
+                exc.payload = payload  # type: ignore[attr-defined]
+            except Exception:
+                return
+        self._note_registration(payload)
+        self._note_runtime_key(payload.get("key_thumbprint"))
+        payload["registration_context"] = self._registration_context(payload)
+
+    def _observe_registration_error(self, exc: BaseException) -> None:
+        """Attach context and print the single pending line once per process.
+
+        Diagnostics only. It never raises, so the governance error it
+        describes always reaches the caller unchanged. While a discovery
+        report asks for workload proof the line is held back, and the report
+        calls this again once its sighting has been answered
+        (``registry._post_discover``): that answer may name the address the
+        gateway will notify.
+        """
+        try:
+            code = normalize_agentic_error_code(getattr(exc, "code", ""), "")
+            if code not in _REGISTRATION_MESSAGE_CODES:
+                return
+            self._attach_registration_context(exc)
+            from .registry import _log_enrolment_state
+
+            payload = getattr(exc, "payload", None)
+            _log_enrolment_state(
+                {**(payload if isinstance(payload, dict) else {}), "error": code},
+                engine=self,
+            )
+        except Exception as error:  # pragma: no cover - defensive
+            log.debug("registration context unavailable: %s", type(error).__name__)
+
+    @property
     def acting_user(self) -> str:
         binding = self.principal_binding
         return binding.subject if binding is not None else ""
@@ -325,6 +691,68 @@ class AgenticEngine:
     # Discovery + agent-credential bootstrap
     # ──────────────────────────────────────────────────────────────────
 
+    def fetch_security_enabled(self, *, require_tasks: bool = False) -> bool:
+        """Read the workspace's authenticated effective Agentic setting.
+
+        This deliberately bypasses registration/credential bootstrap. Only an
+        explicit, internally consistent disabled response permits native
+        execution without Agentic calls; failed requests never permit it.
+        """
+        try:
+            response = self._http.get(
+                f"{self.gateway_url}/api/agentic-new/runtime-config",
+                headers=self._headers(include_agent_token=False),
+                timeout=3.0,
+            )
+        except DeepIntShieldError:
+            raise
+        except Exception as exc:
+            raise GatewayUnavailable(reason=type(exc).__name__) from None
+        if self._route_not_implemented(response):
+            if require_tasks:
+                raise GovernanceConfigurationError(framework="agentic-task", code="agent_task_security_unavailable")
+            return True
+        if response.status_code >= 400:
+            self._raise_agentic_http_error(response)
+        # Gateways predating this endpoint serve their SPA index for unknown
+        # GET paths, including /api paths, as 200 text/html. Retain the old
+        # governed path in that case; HTML can never opt a workspace out.
+        if (
+            response.status_code == 200
+            and response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+            == "text/html"
+        ):
+            if require_tasks:
+                raise GovernanceConfigurationError(framework="agentic-task", code="agent_task_security_unavailable")
+            return True
+        try:
+            data = response.json()
+            enabled = data["security_enabled"]
+            available = data["available"]
+            plan = data["plan"]
+            reason = data["reason"]
+            valid = type(enabled) is bool and type(available) is bool
+            if enabled:
+                valid = (
+                    valid and available and reason == "enabled"
+                    and plan in _AGENTIC_INCLUDED_PLANS
+                )
+            elif reason == "plan_not_included":
+                valid = valid and not available and plan in _AGENTIC_EXCLUDED_PLANS
+            elif reason == "workspace_disabled":
+                valid = valid and available and plan in _AGENTIC_INCLUDED_PLANS
+            else:
+                valid = False
+            if not valid:
+                raise ValueError("invalid runtime configuration")
+            if require_tasks and (not enabled or data.get("task_mandates_supported") is not True):
+                raise GovernanceConfigurationError(framework="agentic-task", code="agent_task_security_unavailable")
+            return enabled
+        except DeepIntShieldError:
+            raise
+        except Exception:
+            raise DeepIntShieldError(code=AGENT_INVALID_GATEWAY_RESPONSE) from None
+
     @property
     def credential_info(self) -> VKCredentialInfo:
         """Lazy-loaded discovery info. Cached for 1h; auto-refreshed on a
@@ -335,9 +763,7 @@ class AgenticEngine:
             and failure_now - self._cred_info_failure_at
             <= _CREDENTIAL_FAILURE_TTL_SECONDS
         ):
-            raise GovernanceConfigurationError(
-                code=self._cred_info_failure_code,
-            ) from None
+            raise self._cached_credential_failure() from None
         now = time.time()
         if (
             self._cred_info is not None
@@ -351,9 +777,7 @@ class AgenticEngine:
                 and failure_now - self._cred_info_failure_at
                 <= _CREDENTIAL_FAILURE_TTL_SECONDS
             ):
-                raise GovernanceConfigurationError(
-                    code=self._cred_info_failure_code,
-                ) from None
+                raise self._cached_credential_failure() from None
             now = time.time()
             if (
                 self._cred_info is None
@@ -371,11 +795,26 @@ class AgenticEngine:
                 self._cred_info_failure_at = 0.0
             return self._cred_info
 
+    def _cached_credential_failure(self) -> GovernanceConfigurationError:
+        """The short negative cache re-raises with the remembered context."""
+        error = GovernanceConfigurationError(code=self._cred_info_failure_code)
+        try:
+            self._attach_registration_context(error)
+        except Exception:  # pragma: no cover - defensive
+            pass
+        return error
+
     def set_agent_credential(self, cred: AgentCredential) -> None:
         """Override the auto-built credential (advanced; usually for tests
         where you want a known-good static token)."""
         with self._credential_lock:
             self._agent_credential = cred
+            self._provisional_credential = None
+            self._forget_optional_credential()
+            try:
+                self._set_aside_credentials.discard(cred)
+            except TypeError:  # pragma: no cover - not weakly referenceable
+                pass
 
     def _clear_credential_failure_cache(self) -> None:
         """Forget a short-lived fail-closed lookup after discovery changed state."""
@@ -404,10 +843,32 @@ class AgenticEngine:
             if self._agent_credential is not None:
                 return self._agent_credential
             info = self.credential_info
-            if not info.agent_configured:
+            if not info.agent_configured and not info.runtime_auth_mode:
                 # LLM-only VK - no agent token needed.
                 return None
-            self._agent_credential = self._build_credential_for(info)
+            if self._optional_credential_resting(info):
+                # The gateway marked this credential optional and building it
+                # failed moments ago: the agent runs on its virtual key.
+                return None
+            try:
+                credential = self._build_credential_for(info)
+            except Exception as exc:
+                if self._credential_optional(info):
+                    # An approved agent the gateway admits on its virtual key:
+                    # the declared identity it cannot build here is optional.
+                    self._rest_optional_credential(info, exc, None)
+                    return None
+                if not isinstance(exc, DeepIntShieldError):
+                    raise
+                pending = self._provisional_key_fallback(exc, info)
+                if pending is None:
+                    raise
+                raise pending from None
+            self._agent_credential = credential
+            self._provisional_credential = (
+                credential if self._provisional_pending(info) else None
+            )
+            self._built_credential = credential
             return self._agent_credential
 
     # ──────────────────────────────────────────────────────────────────
@@ -421,6 +882,10 @@ class AgenticEngine:
         profile or credential change made mid-process. A legacy decision is
         accepted only from a gateway that does not implement either canonical
         Agentic-New route."""
+        from .runtime import passthrough_decision, security_enabled
+
+        if not security_enabled(self):
+            return passthrough_decision()
         # Stamp the request-local session unless the caller supplied one.
         if not dc.session_id:
             dc.session_id = self.session_id
@@ -437,6 +902,8 @@ class AgenticEngine:
                         self._cred_info_failure_code = ""
                         self._cred_info_failure_at = 0.0
                         self._agent_credential = None
+                        self._provisional_credential = None
+                        self._forget_optional_credential()
                     continue
                 self._raise_agentic_http_error(exc.response)
             except httpx.HTTPError as exc:
@@ -464,6 +931,10 @@ class AgenticEngine:
         required scanner failure raises a stable code-only Agentic exception.
         Returns the server-assigned blueprint id, or None for the two legacy
         compatibility cases."""
+        from .runtime import security_enabled
+
+        if not security_enabled(self):
+            return None
         try:
             payload = manifest.to_dict() if hasattr(manifest, "to_dict") else manifest
             # Stamp the per-process session + principal so the blueprint binds to
@@ -561,45 +1032,135 @@ class AgenticEngine:
         Authorization calls pass ``fail_closed=True``: if a VK is configured
         for workload identity, a credential/setup/token failure must block
         before the PDP request rather than silently dropping the agent proof.
+
+        Two gateway statements change that, on both paths:
+
+        * an answer marked ``credential_optional`` (an approved agent the
+          gateway admits on its virtual key): a failure to build its
+          credential or obtain its token sends no token, logs one line per
+          process and is not retried for a minute;
+        * a provisional runtime key refused at enrolment or challenge with
+          ``agent_runtime_authentication_failed``: the offer is set aside and
+          credential-info is asked once more, and the call continues with the
+          new answer. Exactly one re-read; every other failure is unchanged.
         """
+        from .runtime import scoped_security_enabled
+
+        if scoped_security_enabled(self) is False:
+            return None
         if fail_closed:
             try:
-                cred = self.agent_credential
-                if cred is None:
-                    return None
-                token = str(cred.get_token() or "").strip()
-                if not token:
-                    raise GovernanceConfigurationError(
-                        framework="agent-credential",
-                        reason="configured credential returned an empty agent token",
-                    )
-                return token
+                return self._fail_closed_agent_token()
             except ImportError as exc:
                 raise GovernanceConfigurationError(
                     framework="agent-credential",
                     reason=type(exc).__name__,
                 ) from None
-            except DeepIntShieldError:
+            except DeepIntShieldError as exc:
+                # A pending registration or runtime key stops the governed
+                # call here. Remember what the gateway said (reference, key
+                # thumbprint) and print the one developer-facing line.
+                self._observe_registration_error(exc)
                 raise
             except Exception as exc:
                 raise GatewayUnavailable(
                     reason=type(exc).__name__
                 ) from None
-        try:
+        return self._best_effort_agent_token()
+
+    def _fail_closed_agent_token(self) -> Optional[str]:
+        """The authorization path of :meth:`agent_token`; errors are translated there."""
+        # A second pass happens only after a refused provisional key was set
+        # aside and credential-info answered again: one re-read, never a loop.
+        for attempt in range(2):
             cred = self.agent_credential
-        except ImportError as exc:
-            log.warning("agent credential unavailable: %s", exc)
-            return None
-        except Exception as exc:  # discovery failure shouldn't break LLM traffic
-            log.warning("agent credential discovery failed: %s", exc)
-            return None
-        if cred is None:
-            return None
-        try:
-            return cred.get_token()
-        except Exception as exc:
-            log.warning("agent token acquisition failed: %s", exc)
-            return None
+            if cred is None:
+                return None
+            if self._optional_credential_resting_for(cred):
+                return None
+            try:
+                token = str(cred.get_token() or "").strip()
+            except Exception as exc:
+                if attempt == 0 and self._set_aside_refused_provisional_key(cred, exc):
+                    self._reread_after_refused_provisional_key()
+                    continue
+                if self._optional_credential_failure(cred, exc):
+                    return None
+                if isinstance(exc, DeepIntShieldError):
+                    pending = self._provisional_token_fallback(cred, exc)
+                    if pending is not None:
+                        raise pending from None
+                raise
+            if not token:
+                error = GovernanceConfigurationError(
+                    framework="agent-credential",
+                    reason="configured credential returned an empty agent token",
+                )
+                if self._optional_credential_failure(cred, error):
+                    return None
+                raise error
+            return token
+        return None  # pragma: no cover - every pass returns or raises
+
+    def _best_effort_agent_token(self) -> Optional[str]:
+        """The transparent-traffic path of :meth:`agent_token`."""
+        for attempt in range(2):
+            try:
+                cred = self.agent_credential
+            except ImportError as exc:
+                if self._broker_identity_required():
+                    raise
+                _log_credential_failure(exc, "credential_dependency_missing")
+                return None
+            except Exception as exc:  # discovery failure shouldn't break LLM traffic
+                if self._broker_identity_required():
+                    raise
+                _log_credential_failure(exc, "credential_configuration_error")
+                return None
+            if cred is None:
+                return None
+            if self._optional_credential_resting_for(cred):
+                return None
+            try:
+                return cred.get_token()
+            except Exception as exc:
+                if attempt == 0 and self._set_aside_refused_provisional_key(cred, exc):
+                    try:
+                        self._reread_after_refused_provisional_key()
+                    except Exception as reread_error:
+                        # The offer is gone, so this reads as any lookup
+                        # failure of transparent traffic: a pending answer
+                        # has been reported and the traffic goes on.
+                        if self._broker_identity_required():
+                            raise
+                        _log_credential_failure(reread_error, "credential_configuration_error")
+                        return None
+                    continue
+                if self._optional_credential_failure(cred, exc):
+                    return None
+                if self._provisional_token_fallback(cred, exc) is not None:
+                    # The registration is simply pending, and has been reported as
+                    # such: transparent traffic goes on without an agent token,
+                    # as it does when the gateway answers a pending lookup itself.
+                    return None
+                if getattr(cred, "provider_type", "") == "gateway_broker":
+                    raise
+                _log_credential_failure(exc, "credential_exchange_failed")
+                return None
+        return None  # pragma: no cover - every pass returns or raises
+
+    def _broker_identity_required(self) -> bool:
+        """Whether the cached answer names a broker identity traffic must present.
+
+        A gateway-broker answer fails closed even on transparent traffic,
+        unless the gateway marked it ``credential_optional``.
+        """
+        info = self._cred_info
+        return (
+            info is not None
+            and info.runtime_auth_mode == "gateway_broker"
+            and not self._credential_optional(info)
+        )
 
     # ──────────────────────────────────────────────────────────────────
     # Internals
@@ -617,6 +1178,10 @@ class AgenticEngine:
         if gaf_call is not None:
             gaf, gaf_decision_id = gaf_call
             return self._decision_from_gaf(gaf, gaf_decision_id)
+
+        from .task_context import current_task_context, require_task_security
+        if current_task_context() is not None:
+            require_task_security(False)
 
         legacy = self._post_legacy_compat_decide(dc)
         if legacy is None:
@@ -656,6 +1221,9 @@ class AgenticEngine:
             ),
         )
         if self._route_not_implemented(resp):
+            from .task_context import current_task_context, require_task_security
+            if current_task_context() is not None:
+                require_task_security(False)
             # _gaf_payload() normally runs credential discovery first. The
             # explicit check also covers callers that supplied both a custom
             # agent principal and credential override.
@@ -690,6 +1258,18 @@ class AgenticEngine:
                 type(exc).__name__,
                 code=AGENT_INVALID_GATEWAY_RESPONSE,
             ) from None
+        if payload.get("task_mandate"):
+            from .task_context import capture_task_receipt, require_task_security
+
+            proceeds = decision.proceed if decision.proceed is not None else decision.allow
+            if proceeds:
+                # A gateway ignoring the new fields must never authorize a
+                # task by accidentally falling back to its ordinary decision.
+                require_task_security(bool(
+                    decision.allow and decision.verdict == Verdict.ALLOW
+                    and decision.task_receipt and decision.task_id
+                ))
+                capture_task_receipt(decision.task_id, decision.task_receipt)
         decision_id = (
             decision.decision_id
             or decision.approval_id
@@ -702,6 +1282,9 @@ class AgenticEngine:
         self, dc: DelegationContext
     ) -> Optional[Decision]:
         """Call the retired PDP only for a proven older-gateway fallback."""
+        from .task_context import current_task_context, require_task_security
+        if current_task_context() is not None:
+            require_task_security(False)
         if self._canonical_credential_info_available is not False:
             raise GovernanceConfigurationError(
                 framework="agentic-new",
@@ -744,7 +1327,8 @@ class AgenticEngine:
     def _post_decide(self, dc: DelegationContext) -> Decision:
         return self._decide_once(dc)
 
-    def _gaf_payload(self, dc: DelegationContext) -> dict[str, str]:
+    def _gaf_payload(self, dc: DelegationContext) -> dict[str, object]:
+        from .task_context import task_payload
         raw_tool = str(dc.tool or "").strip()
         tool_name = (
             raw_tool.split(":", 1)[1]
@@ -780,9 +1364,9 @@ class AgenticEngine:
         permission = str(dc.permission or "").strip() or "holder"
         object_id = str(dc.object or "").strip()
         if not object_id:
-            # Safe, deterministic default: an operator must explicitly grant
-            # permission key "<tool>:<read|write>" in Organization → Permissions.
-            # Match Go PermissionSubject exactly. Missing tuples deny.
+            # Discovery declares this exact default for the agent review.
+            # The reviewed access plan includes it only after an operator
+            # confirms approval. Match Go PermissionSubject; missing tuples deny.
             object_id = _permission_subject(f"{tool_key}:{action_class}")
         tool_subject = f"tool:{tool_key}"
         return {
@@ -823,6 +1407,7 @@ class AgenticEngine:
                 str(subject).strip() for subject in (dc.actor_chain or []) if str(subject).strip()
             ],
             "prompt_digest": _prompt_digest(getattr(dc, "prompt", "")),
+            **task_payload(),
         }
 
     @staticmethod
@@ -850,6 +1435,8 @@ class AgenticEngine:
             proceed=proceed,
             would_block=gaf.would_block,
             approval_id=gaf.approval_id,
+            task_id=gaf.task_id,
+            task_receipt=gaf.task_receipt,
         )
 
     @staticmethod
@@ -914,13 +1501,17 @@ class AgenticEngine:
     ) -> GovernanceConfigurationError:
         """Preserve the server code and leave human remediation to Agentic UI."""
         detail = self._response_error_detail(resp)
-        return GovernanceConfigurationError(
+        error = GovernanceConfigurationError(
             framework="agentic-new",
             reason=detail,
             code=self._response_error_code(resp) or AGENT_CONFIGURATION_ERROR,
             status_code=resp.status_code,
             payload=self._response_json_object(resp),
         )
+        # A registration-state body (credential-info 409/403) names the
+        # registration; keep it for the developer message and log it once.
+        self._observe_registration_error(error)
+        return error
 
     def _raise_agentic_http_error(self, resp: httpx.Response) -> None:
         """Translate every Agentic HTTP failure to the public code contract."""
@@ -968,7 +1559,15 @@ class AgenticEngine:
         try:
             resp = self._http.get(
                 f"{self.gateway_url}/api/agentic-new/credential-info",
-                headers=self._headers(include_agent_token=False),
+                # A client able to hold a runtime key says so here, and only
+                # then does the gateway offer a pending registration its
+                # provisional key. The older route below predates that key
+                # and is asked exactly as before.
+                headers={
+                    **self._headers(include_agent_token=False),
+                    **self._provisional_key_headers(),
+                },
+                follow_redirects=False,
             )
         except DeepIntShieldError:
             raise
@@ -981,6 +1580,7 @@ class AgenticEngine:
                 resp = self._http.get(
                     f"{self.gateway_url}/api/agentic-security/vk-credential-info",
                     headers=self._headers(include_agent_token=False),
+                    follow_redirects=False,
                 )
             except DeepIntShieldError:
                 raise
@@ -1000,7 +1600,341 @@ class AgenticEngine:
                 code=AGENT_INVALID_GATEWAY_RESPONSE,
             ) from None
 
+    # ── provisional runtime key: capability and fallback ───────────────
+
+    def _runtime_key_capable(self) -> bool:
+        """Whether this process can hold and use a gateway runtime key.
+
+        Decided once per engine, on first use, from local facts alone: the
+        ``runtime`` extra imports, the runtime key store is usable and the
+        gateway address is one the broker credential accepts. Nothing is
+        requested, no key is generated and nothing is written; the rules are
+        the credential's own (``gateway_broker.runtime_key_capable``).
+
+        Judging it never fails the lookup that asked: an error while judging,
+        including an optional dependency that cannot be imported, means "not
+        capable", and the client keeps the flow it had before the capability
+        existed.
+        """
+        capable = self._runtime_key_capability
+        if capable is None:
+            with self._credential_lock:
+                capable = self._runtime_key_capability
+                if capable is None:
+                    try:
+                        from .credentials.gateway_broker import runtime_key_capable
+
+                        capable = runtime_key_capable(self.gateway_url) is True
+                    except Exception:
+                        capable = False
+                    except BaseException as error:
+                        # A broken native build of the optional dependency
+                        # fails its import with pyo3's PanicException, which
+                        # is not an ``Exception``. This lookup is the first
+                        # place such a process imports it, so it must not be
+                        # the place a virtual-key flow starts failing.
+                        # Interrupts and exits are never absorbed.
+                        if type(error).__name__ != "PanicException":
+                            raise
+                        capable = False
+                    self._runtime_key_capability = capable
+        return capable
+
+    def _provisional_key_headers(self) -> dict[str, str]:
+        """The header that asks the gateway for a provisional runtime key.
+
+        Empty unless this process can hold such a key, so a client that
+        cannot keeps receiving the pending answer it always received.
+        """
+        if not self._runtime_key_capable():
+            return {}
+        from .credentials.gateway_broker import provisional_key_headers
+
+        return provisional_key_headers(True)
+
+    @staticmethod
+    def _provisional_pending(info: Optional[VKCredentialInfo]) -> bool:
+        """Whether ``info`` is the provisional offer to a pending registration.
+
+        The block has to say both: a ``provisional`` key, and a registration
+        whose state is ``pending``. Nothing else the engine remembers can
+        stand in for either statement.
+        """
+        return (
+            info is not None
+            and getattr(info, "provisional", False) is True
+            and str(getattr(info, "registration_state", "") or "").strip().lower() == "pending"
+        )
+
+    def _provisional_key_fallback(
+        self, exc: BaseException, info: Optional[VKCredentialInfo],
+    ) -> Optional[GovernanceConfigurationError]:
+        """Read a provisional runtime key this process cannot use as pending.
+
+        A gateway offers a pending registration its provisional key only to a
+        client that asked for one, but an older gateway offers it to every
+        client, and a key store can prove unusable for one scope. When
+        building or enrolling that key fails for a local reason, nothing is
+        wrong with the registration: it is pending, as it was before the
+        offer existed. This returns the ``agent_registration_pending`` error
+        to raise in place of ``exc``, exactly as if the gateway had answered
+        the lookup with it. The sighting is then filed with the virtual key
+        alone and the developer reads the plain pending line, which names no
+        runtime key because this process holds none it could cite.
+
+        The offer and its key are set aside, so the next lookup asks the
+        gateway again and an administrator's decision is seen on the next run
+        or retry.
+
+        Returns None, and ``exc`` must surface unchanged, for any other
+        failure and for any block that is not a provisional offer to a
+        pending registration. A declared or approved identity never has its
+        credential errors read as "pending".
+        """
+        if not self._provisional_pending(info):
+            return None
+        code = normalize_agentic_error_code(getattr(exc, "code", ""), "")
+        if code not in _PROVISIONAL_KEY_UNUSABLE_CODES:
+            return None
+        return self._provisional_offer_pending(info, code)
+
+    def _provisional_offer_pending(
+        self, info: Optional[VKCredentialInfo], reason: str,
+    ) -> GovernanceConfigurationError:
+        """Set a provisional offer aside and return the plain pending error.
+
+        The engine is left exactly where a 409 ``agent_registration_pending``
+        from the gateway leaves it, including the short negative cache, and
+        the developer reads the pending line without a runtime-key clause.
+        """
+        with self._credential_lock:
+            if self._cred_info is info:
+                # The same state a 409 from the gateway leaves behind,
+                # including its short negative cache.
+                self._cred_info = None
+                self._cred_info_fetched_at = 0.0
+                self._cred_info_failure_code = _REGISTRATION_PENDING_CODE
+                self._cred_info_failure_at = time.monotonic()
+            if self._agent_credential is self._provisional_credential:
+                self._agent_credential = None
+            if self._built_credential is self._provisional_credential:
+                self._built_credential = None
+            self._provisional_credential = None
+            self._runtime_key_thumbprint = ""
+        log.debug("provisional runtime key not usable here (%s); the registration stays pending", reason)
+        error = GovernanceConfigurationError(
+            framework="agentic-new",
+            code=_REGISTRATION_PENDING_CODE,
+            payload={
+                "registration": {
+                    "id": getattr(info, "registration_id", ""),
+                    "agent_subject": getattr(info, "agent_subject", ""),
+                    "status": "pending",
+                },
+            },
+        )
+        self._observe_registration_error(error)
+        return error
+
+    def _provisional_token_fallback(
+        self, credential: object, exc: BaseException,
+    ) -> Optional[GovernanceConfigurationError]:
+        """:meth:`_provisional_key_fallback` for a key that failed to enrol.
+
+        Applies to the credential this engine built from a provisional offer,
+        and only until the gateway has accepted its key: a failure after that
+        belongs to an approved binding and is not a registration state.
+        """
+        if credential is None or credential is not self._provisional_credential:
+            return None
+        if getattr(credential, "enrolled", None) is not False:
+            return None
+        return self._provisional_key_fallback(exc, self._cred_info)
+
+    # ── a refused provisional key: one re-read ─────────────────────────
+
+    def _set_aside_refused_provisional_key(self, credential: object, exc: BaseException) -> bool:
+        """Set aside a provisional offer whose key the gateway refused.
+
+        Applies only to the credential this engine built from a provisional
+        offer to a pending registration, and only when the gateway's
+        enrolment or challenge endpoint refused it with
+        ``agent_runtime_authentication_failed``. That refusal is what an
+        administrator's decision leaves behind: after a VK-trusted approval or
+        a denial the gateway no longer accepts the key, while the offer may
+        still sit in the hour-long credential-info cache of a process that
+        kept running.
+
+        The offer, its credential and the cached answer are dropped, so the
+        next lookup reads the gateway's current answer and replaces the
+        cache. Returns False, leaving everything in place, for any other
+        failure: an outage, a 429, a conflict and a key still waiting for
+        authorization surface unchanged.
+        """
+        if credential is None or not isinstance(exc, DeepIntShieldError):
+            return False
+        if normalize_agentic_error_code(getattr(exc, "code", ""), "") != _RUNTIME_AUTHENTICATION_FAILED:
+            return False
+        endpoint = getattr(exc, "runtime_endpoint", "")
+        if endpoint not in _PROVISIONAL_REREAD_ENDPOINTS:
+            return False
+        with self._credential_lock:
+            if credential is self._provisional_credential:
+                if self._agent_credential is credential:
+                    self._agent_credential = None
+                if self._built_credential is credential:
+                    self._built_credential = None
+                self._provisional_credential = None
+                self._cred_info = None
+                self._cred_info_fetched_at = 0.0
+                self._cred_info_failure_code = ""
+                self._cred_info_failure_at = 0.0
+                # The gateway no longer holds that key for this registration.
+                self._runtime_key_thumbprint = ""
+                try:
+                    self._set_aside_credentials.add(credential)
+                except TypeError:  # pragma: no cover - not weakly referenceable
+                    pass
+            elif credential not in self._set_aside_credentials or credential is self._agent_credential:
+                return False
+            # Otherwise a concurrent call already set this very offer aside;
+            # this one reads the answer that call left behind.
+        log.debug("provisional runtime key refused at %s; reading the credential settings once more", endpoint)
+        return True
+
+    def _reread_after_refused_provisional_key(self) -> None:
+        """Ask credential-info once more after a refused provisional key.
+
+        The new answer replaces the cached one. An approved, declared or
+        plainly pending answer lets the call continue (a 409 pending answer is
+        raised as the gateway gave it). A gateway that repeats its provisional
+        offer is read as the plain pending state, without a runtime-key
+        clause, and no second enrolment is attempted in this call.
+        """
+        info = self.credential_info
+        if self._provisional_pending(info):
+            raise self._provisional_offer_pending(info, _RUNTIME_AUTHENTICATION_FAILED)
+
+    # ── a credential the gateway marked optional ───────────────────────
+
+    @staticmethod
+    def _credential_optional(info: Optional[VKCredentialInfo]) -> bool:
+        """Whether the gateway marked this answer's credential optional.
+
+        The server-sent ``credential_optional`` flag alone decides; nothing
+        the engine remembers or infers stands in for it.
+        """
+        return info is not None and getattr(info, "credential_optional", False) is True
+
+    def _forget_optional_credential(self) -> None:
+        """Drop the built credential's marker and its failure memory (caller holds the lock)."""
+        self._built_credential = None
+        self._optional_credential_failed_at = 0.0
+        self._optional_credential_failed_for = None
+
+    def _optional_credential_resting(self, info: Optional[VKCredentialInfo]) -> bool:
+        """Whether an optional credential failed for this very answer moments ago."""
+        failed_at = self._optional_credential_failed_at
+        return (
+            failed_at > 0.0
+            and info is not None
+            and info is self._optional_credential_failed_for
+            and self._credential_optional(info)
+            and time.monotonic() - failed_at <= _OPTIONAL_CREDENTIAL_RETRY_SECONDS
+        )
+
+    def _optional_credential_resting_for(self, credential: object) -> bool:
+        return (
+            credential is not None
+            and credential is self._built_credential
+            and self._optional_credential_resting(self._cred_info)
+        )
+
+    def _optional_credential_failure(self, credential: object, exc: BaseException) -> bool:
+        """Whether a failure of ``credential`` leaves the call on the virtual key.
+
+        True only for a credential this engine built itself while the cached
+        credential-info answer is one the gateway marked
+        ``credential_optional``. The failure is then remembered for a minute
+        and reported by one line per process; no token is sent. A credential
+        the application supplied, and every answer without the flag, keep
+        failing closed.
+        """
+        if credential is None or credential is not self._built_credential:
+            return False
+        info = self._cred_info
+        if not self._credential_optional(info):
+            return False
+        self._rest_optional_credential(info, exc, credential)
+        return True
+
+    def _rest_optional_credential(
+        self, info: Optional[VKCredentialInfo], exc: BaseException, credential: object,
+    ) -> None:
+        """Remember an optional credential's failure and say once that the agent runs on its key.
+
+        ``credential`` is the one that failed, or None when building it did.
+        The line cites a runtime key only when one was enrolled: the
+        thumbprint of a key the gateway holds pending, or of one it accepted.
+        """
+        payload = getattr(exc, "payload", None)
+        thumbprint = _registration_fragment(
+            payload.get("key_thumbprint") if isinstance(payload, dict) else "",
+            _RUNTIME_KEY_THUMBPRINT_RE, 43,
+        )
+        if not thumbprint and getattr(credential, "enrolled", None) is True:
+            # The gateway accepted this key earlier; cite it.
+            try:
+                thumbprint = _registration_fragment(
+                    getattr(credential, "key_thumbprint", ""), _RUNTIME_KEY_THUMBPRINT_RE, 43,
+                )
+            except Exception:
+                thumbprint = ""
+        with self._credential_lock:
+            self._optional_credential_failed_at = time.monotonic()
+            self._optional_credential_failed_for = info
+        code = normalize_agentic_error_code(
+            get_exception_error_code(exc)
+            or ("credential_dependency_missing" if isinstance(exc, ImportError) else ""),
+            "",
+        )
+        log.debug("optional agent credential unavailable (%s); the call continues on the virtual key", code or type(exc).__name__)
+        key = self._agent_subject_selector or "agent"
+        with _optional_credential_log_lock:
+            if key in _optional_credential_logged:
+                return
+            _optional_credential_logged.add(key)
+        clause = f" (runtime key SHA256:{thumbprint})" if thumbprint else ""
+        log.warning(
+            "DeepintShield: this agent runs on its virtual key; its declared identity is not active yet%s.",
+            clause,
+        )
+
     def _build_credential_for(self, info: VKCredentialInfo) -> AgentCredential:
+        if info.runtime_auth_mode == "gateway_broker":
+            from .credentials.gateway_broker import GatewayBrokerCredential
+
+            if info.runtime_broker is None or (
+                info.agent_subject and info.agent_subject != self._agent_subject_selector
+            ):
+                raise GovernanceConfigurationError(
+                    framework="gateway-broker", code="agent_runtime_configuration_error",
+                )
+            return GatewayBrokerCredential(
+                http=self._http, gateway_url=self.gateway_url, virtual_key=self.virtual_key,
+                agent_subject=self._agent_subject_selector, broker=info.runtime_broker,
+                accepts_provisional_key=self._runtime_key_capable(),
+            )
+        if info.runtime_auth_mode:
+            raise GovernanceConfigurationError(
+                framework="gateway-broker", code="agent_runtime_configuration_error",
+            )
+        if info.require_proof_of_possession and info.provider_type != "generic_oidc":
+            raise GovernanceConfigurationError(
+                framework="agent-credential",
+                reason="this credential adapter has no verified DPoP token issuance protocol",
+                code="credential_dpop_provider_unsupported",
+            )
         if info.provider_type == "entra_agent_id":
             from .credentials.entra import EntraAgentCredential
 
@@ -1017,13 +1951,18 @@ class AgenticEngine:
             from .credentials.zeroid import ZeroIDCredential
 
             return ZeroIDCredential(
-                exchange_endpoint=info.exchange_endpoint,
+                exchange_endpoint=(
+                    os.environ.get("ZEROID_EXCHANGE_ENDPOINT", "") or info.exchange_endpoint
+                ),
                 gateway_audience=info.gateway_audience,
                 scopes=info.scopes,
             )
         if info.provider_type == "generic_oidc":
             from .credentials.oidc import OIDCCredential
 
+            # A provisioned client can have narrower scopes than its shared
+            # verification provider. An explicit empty value requests no scope.
+            workload_scopes = os.environ.get("OIDC_SCOPES")
             # The gateway stores only VERIFICATION config for a generic_oidc
             # provider (issuer / audience / JWKS), matching how the UI is
             # configured. The token endpoint and client id used to MINT the
@@ -1032,15 +1971,17 @@ class AgenticEngine:
             # secret is read from OIDC_CLIENT_SECRET by OIDCCredential itself.
             return OIDCCredential(
                 exchange_endpoint=(
-                    info.exchange_endpoint
-                    or os.environ.get("OIDC_TOKEN_ENDPOINT", "")
+                    os.environ.get("OIDC_TOKEN_ENDPOINT", "")
+                    or info.exchange_endpoint
                 ),
                 client_id=(
                     info.blueprint_client_id
                     or os.environ.get("OIDC_CLIENT_ID", "")
                 ),
                 gateway_audience=info.gateway_audience,
-                scopes=info.scopes,
+                scopes=(workload_scopes.split() if workload_scopes is not None else info.scopes),
+                issuer=info.issuer,
+                require_proof_of_possession=info.require_proof_of_possession,
             )
         # Dev shortcut: respect a known-good token from env for offline
         # iteration where the gateway is reachable but Azure isn't.
@@ -1063,30 +2004,49 @@ class AgenticEngine:
         if self._agent_subject_selector:
             h["X-Agent-Subject"] = self._agent_subject_selector
         if include_agent_token:
-            token = self.agent_token(fail_closed=True)
-            if token:
-                h["X-Agent-Token"] = token
-                # A proof of possession (RFC 9449) alongside the token, so a
-                # token the issuer BOUND to this process's key cannot be used by
-                # anyone who merely copies it. Sent whenever a proof can be
-                # produced: the gateway ignores one for an unbound token, and
-                # requires one for a bound token, so sending it unconditionally
-                # is what makes the transition invisible to the developer.
-                h.update(self._dpop_headers(method, path))
+            h.update(self.workload_headers(method, path))
         return h
 
-    def _dpop_headers(self, method: str, path: str) -> dict[str, str]:
-        """Proof headers for one request, or {} when proofs are unavailable.
+    def workload_headers(self, method: str, uri: str, *, token: str = "") -> dict[str, str]:
+        """Acquire a token and its proof from one immutable credential choice.
 
-        Never raises. A workload without the optional 'cryptography' dependency
-        keeps working as a plain bearer client exactly as before; if its token
-        IS bound, the gateway refuses it with a message naming the cause, which
-        is far more useful than an import error at startup.
+        Also used by MCP's native per-request hook. Holding the credential
+        lock prevents a concurrent identity refresh from switching the signer
+        between token acquisition and proof construction.
         """
+        with self._credential_lock:
+            token = token or self.agent_token(fail_closed=True) or ""
+            if not token:
+                return {}
+            return {
+                "X-Agent-Token": token,
+                **self._dpop_headers(method, uri, access_token=token),
+            }
+
+    def _dpop_headers(
+        self, method: str, path: str, access_token: Optional[str] = None
+    ) -> dict[str, str]:
+        """Proof headers for one request, using the credential's enrolled key.
+
+        Legacy issuer credentials retain their existing optional proof behavior.
+        Gateway sessions always require their credential's specific signer and
+        fail closed when it is unavailable.
+        """
+        uri = path if path.startswith(("https://", "http://")) else f"{self.gateway_url.rstrip('/')}{path}"
+        credential = self._agent_credential
+        signer = getattr(credential, "proof_headers", None)
+        if callable(signer):
+            return signer(method, uri, access_token or "")
+        if str(access_token or "").startswith("dsrs_"):
+            raise GovernanceConfigurationError(
+                framework="gateway-broker", code="agent_runtime_key_unavailable",
+            )
         try:
             from .dpop import dpop_headers
 
-            return dpop_headers(method, f"{self.gateway_url.rstrip('/')}{path}")
+            return dpop_headers(
+                method, uri, access_token=access_token
+            )
         except Exception:
             return {}
 

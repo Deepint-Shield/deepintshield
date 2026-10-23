@@ -1,4 +1,10 @@
-"""LiteLLM enforcement - gate every ``litellm.completion`` / ``acompletion`` call
+"""Legacy explicit opt-in LiteLLM completion enforcement.
+
+This integration is not installed automatically: provider inference is distinct
+from executable application tools. It remains available for callers that
+explicitly invoke this legacy module's ``enforce()`` function.
+
+Gate every ``litellm.completion`` / ``acompletion`` call
 through canonical Agentic authorization before the model is called.
 
 LiteLLM is an LLM SDK, not a tool framework, so "enforce in the SDK" means the

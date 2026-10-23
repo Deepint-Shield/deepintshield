@@ -25,7 +25,10 @@ from ..errors import GovernanceConfigurationError, public_agentic_boundary
 from ..gate import resolve
 from ..obligations import apply_obligations
 from ._common import (
+    CallbackInventory,
+    explicit_callback_inventory,
     install_method_guard,
+    merge_callback_inventories,
     set_attr,
     source_fingerprint,
     wrap_callable,
@@ -38,6 +41,61 @@ _TOPOLOGY_BOUNDARIES = (
     ("pydantic_ai", "Agent", ("run_sync", "run", "run_stream")),
     ("pydantic_ai.agent", "Agent", ("run_sync", "run")),
 )
+
+
+def executable_callbacks(owner: Any, *, prefix: str = "pydanticai") -> CallbackInventory:
+    """Read registered application callbacks without walking agent internals."""
+    modules = ("pydantic_ai",)
+    inventories = [explicit_callback_inventory(
+        owner,
+        ("model_settings", "_metadata", "_validation_context", "_prepare_tools",
+         "_prepare_output_tools", "_history_processors", "_event_stream_handler"),
+        framework_modules=modules, prefix=prefix,
+    )]
+    # Public instruction/system_prompt/output_validator decorators retain
+    # functions either directly or in these small, versioned runner records.
+    for field in (
+        "_instructions", "_system_prompt_functions", "_system_prompt_dynamic_functions",
+        "_output_validators", "_cap_instructions",
+    ):
+        try:
+            values = getattr(owner, field, None)
+        except Exception:
+            inventories.append(CallbackInventory(incomplete=True))
+            continue
+        if values is None:
+            continue
+        if isinstance(values, dict):
+            values = [item for _, item in sorted(values.items(), key=lambda pair: str(pair[0]))]
+        if not isinstance(values, (list, tuple)):
+            inventories.append(CallbackInventory(incomplete=True))
+            continue
+        inventories.append(explicit_callback_inventory(
+            owner, (field,), framework_modules=modules, prefix=prefix,
+        ))
+        for index, value in enumerate(values[:64]):
+            inventories.append(explicit_callback_inventory(
+                value, ("function", "instruction"), framework_modules=modules,
+                prefix=f"{prefix}.{field}[{index}]",
+            ))
+        if len(values) > 64:
+            inventories.append(CallbackInventory(incomplete=True))
+    try:
+        tools = _find_registry(owner)
+    except Exception:
+        tools = None
+        inventories.append(CallbackInventory(incomplete=True))
+    if tools is not None:
+        if isinstance(tools, dict):
+            tools = [item for _, item in sorted(tools.items(), key=lambda pair: str(pair[0]))]
+        for index, tool in enumerate(tools[:64]):
+            inventories.append(explicit_callback_inventory(
+                tool, ("prepare", "args_validator"), framework_modules=modules,
+                prefix=f"{prefix}.tools[{index}]",
+            ))
+        if len(tools) > 64:
+            inventories.append(CallbackInventory(incomplete=True))
+    return merge_callback_inventories(*inventories)
 
 
 def _tool_manager_guard_active() -> bool:

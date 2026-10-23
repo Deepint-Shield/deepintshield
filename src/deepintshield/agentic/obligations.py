@@ -11,6 +11,8 @@ import inspect
 import json
 import re
 
+from .._compat import call_signature
+
 
 def digest(args: tuple, kwargs: dict) -> str:
     """sha256 of the canonicalised arguments. Sort keys so identical calls
@@ -253,7 +255,7 @@ def apply_obligations_to_call(
     if not obligations or not args:
         return args, masked_kwargs
     try:
-        signature = inspect.signature(tool_callable)  # type: ignore[arg-type]
+        signature = call_signature(tool_callable)
         bound = signature.bind_partial(*args, **kwargs)
     except (TypeError, ValueError):
         return args, masked_kwargs

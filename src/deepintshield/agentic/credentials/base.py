@@ -16,7 +16,7 @@ class AgentCredential(Protocol):
 
     Implementations MUST:
       * cache tokens in-process for their TTL,
-      * refresh silently when ttl < 5 min,
+      * refresh silently before expiry (up to 5 minutes early),
       * be safe for concurrent callers,
       * never block the hot path on a network roundtrip if the cached token
         is still valid.
@@ -60,11 +60,12 @@ class _CachedToken:
         self._lock = threading.Lock()
         self._token: Optional[str] = None
         self._expires_at: float = 0.0
+        self._refresh_at: float = 0.0
 
     def get(self) -> Optional[str]:
         if not self._token:
             return None
-        if time.time() >= self._expires_at - self.REFRESH_BEFORE_EXPIRY_SECONDS:
+        if time.time() >= self._refresh_at:
             return None
         return self._token
 
@@ -95,6 +96,9 @@ class _CachedToken:
     def _set_unlocked(self, token: str, expires_in_seconds: float) -> None:
         self._token = token
         self._expires_at = time.time() + expires_in_seconds
+        # A fixed five-minute margin continuously refreshed short-lived tokens.
+        margin = min(self.REFRESH_BEFORE_EXPIRY_SECONDS, expires_in_seconds * 0.1)
+        self._refresh_at = self._expires_at - margin
 
     def lock(self) -> threading.Lock:
         """Compatibility escape hatch for older credential implementations.

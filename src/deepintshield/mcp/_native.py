@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 from mcp import ClientSession
 from mcp.client.streamable_http import streamable_http_client
+from pydantic import ValidationError
 
 from ..errors import DeepintShieldError, ErrorCode
 from ._errors import mcp_error_from_exception, raise_for_mcp_result
@@ -53,22 +54,84 @@ def _require_supported_mcp() -> None:
     ) from None
 
 
+def _request_error_context(
+    args: tuple[Any, ...], kwargs: Mapping[str, Any]
+) -> tuple[str, ErrorCode]:
+    """Choose the public boundary from this request, never session-wide state."""
+    request = args[0] if args else kwargs.get("request")
+    try:
+        method = getattr(getattr(request, "root", request), "method", None)
+    except Exception:
+        method = None
+    if type(method) is not str:
+        return "send_request", ErrorCode.MCP_PROTOCOL_ERROR
+    if method == "tools/call":
+        return "call_tool", ErrorCode.MCP_EXECUTION_FAILED
+    if method == "tools/list":
+        return "list_tools", ErrorCode.MCP_DISCOVERY_FAILED
+    if method == "initialize":
+        return "connect", ErrorCode.MCP_CONNECTION_FAILED
+    return "send_request", ErrorCode.MCP_PROTOCOL_ERROR
+
+
 class _DeepIntShieldClientSession(ClientSession):
     """Official session with one small, stable exception boundary."""
+
+    def __init__(
+        self,
+        *args: Any,
+        authentication_failures: list[BaseException] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        # Filled by the gateway workload hook when issuing credentials for a
+        # request fails.  The transport then cancels the request waiting for
+        # its response, so a bare cancellation here means "look in this list".
+        self._authentication_failures = authentication_failures
+
+    def _authentication_failure(self) -> BaseException | None:
+        failures = self._authentication_failures
+        if not failures:
+            return None
+        return failures.pop(0)
 
     async def send_request(self, *args: Any, **kwargs: Any) -> Any:
         try:
             return await super().send_request(*args, **kwargs)
+        except asyncio.CancelledError:
+            reason = self._authentication_failure()
+            if reason is None:
+                raise
+            operation, fallback_code = _request_error_context(args, kwargs)
+            raise mcp_error_from_exception(
+                reason,
+                operation=operation,
+                fallback_code=fallback_code,
+            ) from None
         except Exception as error:
+            operation, fallback_code = _request_error_context(args, kwargs)
+            # The native session validates the remote result here. Invalid
+            # result schemas remain protocol failures, not operation failures.
+            if isinstance(error, ValidationError):
+                fallback_code = ErrorCode.MCP_PROTOCOL_ERROR
             raise mcp_error_from_exception(
                 error,
-                operation="send_request",
-                fallback_code=ErrorCode.MCP_PROTOCOL_ERROR,
+                operation=operation,
+                fallback_code=fallback_code,
             ) from None
 
     async def list_tools(self, *args: Any, **kwargs: Any) -> Any:
         try:
             return await super().list_tools(*args, **kwargs)
+        except asyncio.CancelledError:
+            reason = self._authentication_failure()
+            if reason is None:
+                raise
+            raise mcp_error_from_exception(
+                reason,
+                operation="list_tools",
+                fallback_code=ErrorCode.MCP_DISCOVERY_FAILED,
+            ) from None
         except Exception as error:
             raise mcp_error_from_exception(
                 error,
@@ -80,6 +143,15 @@ class _DeepIntShieldClientSession(ClientSession):
         try:
             result = await super().call_tool(*args, **kwargs)
             return raise_for_mcp_result(result)
+        except asyncio.CancelledError:
+            reason = self._authentication_failure()
+            if reason is None:
+                raise
+            raise mcp_error_from_exception(
+                reason,
+                operation="call_tool",
+                fallback_code=ErrorCode.MCP_EXECUTION_FAILED,
+            ) from None
         except Exception as error:
             raise mcp_error_from_exception(
                 error,
@@ -117,14 +189,19 @@ async def open_mcp_session(
             code=ErrorCode.CLIENT_CLOSED,
         )
     shield.virtual_key_or_raise()
-    url, headers = shield.connection(
-        provider="mcp",
-        identity=identity,
-        extra=extra_headers,
-    )
+    from ._workload import gateway_task_headers, gateway_workload_hook
+
+    # Acquire workload credentials in the per-request hook so short-lived
+    # tokens renew during long sessions instead of freezing in default headers.
+    url, headers = shield.connection(provider="mcp", identity=False, extra=extra_headers)
+    headers = gateway_task_headers(shield, headers)
 
     stack = AsyncExitStack()
     session: _DeepIntShieldClientSession | None = None
+    # The workload hook records why it could not issue credentials for a
+    # request.  The transport answers such a request with a cancellation, so
+    # the recorded reason - not the cancellation - is what the caller needs.
+    authentication_failures: list[BaseException] = []
     try:
         timeout = httpx.Timeout(shield.timeout, read=300.0)
         http_client = await stack.enter_async_context(
@@ -132,6 +209,17 @@ async def open_mcp_session(
                 headers=headers,
                 timeout=timeout,
                 follow_redirects=False,
+                event_hooks={
+                    "request": [
+                        gateway_workload_hook(
+                            shield,
+                            url,
+                            identity=identity,
+                            headers=headers,
+                            failures=authentication_failures,
+                        )
+                    ]
+                },
             )
         )
         read_stream, write_stream, _get_session_id = await stack.enter_async_context(
@@ -145,6 +233,7 @@ async def open_mcp_session(
             read_stream,
             write_stream,
             read_timeout_seconds=timedelta(seconds=shield.timeout),
+            authentication_failures=authentication_failures,
         )
         await stack.enter_async_context(session)
         await session.initialize()
@@ -155,6 +244,8 @@ async def open_mcp_session(
             # The first setup failure is the actionable one.  Never let a
             # secondary teardown failure replace it or leak native details.
             pass
+        if authentication_failures:
+            raise _connection_error(authentication_failures[0]) from None
         if isinstance(error, (asyncio.CancelledError, KeyboardInterrupt, SystemExit)):
             raise
         raise _connection_error(error) from None

@@ -1,4 +1,4 @@
-"""Automatic (compile-time / kickoff-time) GAF registry discovery.
+"""Automatic discovery at framework compile and run boundaries.
 
 Companion to ``test_agentic_new_discovery.py``, which covers the *payload*
 (``describe_network``) and the *identity* rule. This file covers the wiring: does
@@ -7,7 +7,7 @@ discovery actually fire from a framework's own build boundary with no explicit
 
 Uses the REAL ``langgraph`` when it is installed (the compile guard patches
 ``StateGraph.compile``, which no duck-typed stand-in can exercise) and duck-typed
-stand-in classes for the five frameworks that are not installed here.
+stand-in classes for shared reporting and import lifecycle behavior.
 """
 from __future__ import annotations
 
@@ -241,6 +241,126 @@ def test_langgraph_compile_fails_if_any_node_cannot_be_instrumented(
     assert "could not instrument" not in str(caught.value)
 
 
+def _allow_decisions(decided: list[str]):
+    """A handler that allows every PDP decision and records its tool subject."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/vk-credential-info"):
+            return httpx.Response(
+                200, json={"provider_type": "", "agent_configured": False}
+            )
+        if path.endswith("/agentic-new/decide"):
+            decided.append(_json(request)["tool"])
+            return httpx.Response(
+                200,
+                json={
+                    "verdict": "ALLOW",
+                    "allow": True,
+                    "mode": "enforce",
+                    "proceed": True,
+                },
+            )
+        return httpx.Response(404)
+
+    return handler
+
+
+def _tool_keys(decided: list[str]) -> list[str]:
+    return [subject.rsplit(":", 1)[-1] for subject in decided]
+
+
+def test_langgraph_composite_runnable_node_is_gated_on_every_dispatch_path(
+    shield_factory,
+):
+    """``RunnableParallel`` / ``RunnableSequence`` nodes hold no ``.func`` and
+    their pydantic ``__setattr__`` rejects a plain ``invoke`` override, which
+    made ``compile()`` fail with ``governance_configuration_error``. They also
+    override ``astream`` without calling ``ainvoke``, so the route
+    ``astream_events()`` dispatches through must be gated as well."""
+    import asyncio
+    from operator import itemgetter
+    from typing import TypedDict
+
+    from langchain_core.runnables import RunnableLambda, RunnableParallel
+    from langgraph.graph import END, START, StateGraph
+
+    decided: list[str] = []
+    shield_factory(_allow_decisions(decided))
+
+    class State(TypedDict):
+        value: int
+
+    graph = StateGraph(State)
+    graph.add_node(
+        "extract",
+        RunnableParallel(value=itemgetter("value") | RunnableLambda(lambda v: v + 1)),
+    )
+    graph.add_node(
+        "sequence", itemgetter("value") | RunnableLambda(lambda v: {"value": v * 10})
+    )
+    graph.add_edge(START, "extract")
+    graph.add_edge("extract", "sequence")
+    graph.add_edge("sequence", END)
+    app = graph.compile()
+
+    assert app.invoke({"value": 1}) == {"value": 20}
+    assert _tool_keys(decided) == ["extract", "sequence"]
+
+    assert asyncio.run(app.ainvoke({"value": 1})) == {"value": 20}
+    assert _tool_keys(decided) == ["extract", "sequence"] * 2
+
+    async def stream_events() -> None:
+        async for _ in app.astream_events({"value": 1}):
+            pass
+
+    asyncio.run(stream_events())
+    assert _tool_keys(decided) == ["extract", "sequence"] * 3
+
+    # A configured copy shares the compiled node table, so it stays gated.
+    copy = app.with_config(tags=["copy"])
+    assert list(copy.stream({"value": 1}, stream_mode="values"))[-1] == {"value": 20}
+    assert _tool_keys(decided) == ["extract", "sequence"] * 4
+
+
+def test_langgraph_subgraph_node_asks_the_pdp_once_per_entry(shield_factory):
+    """A compiled subgraph node is gated at the ``invoke``/``ainvoke`` fallback
+    and at the ``stream``/``astream`` it drives internally. The admission
+    marker keeps that to one decision per entry, plus one per inner node."""
+    import asyncio
+    from collections import Counter
+    from typing import TypedDict
+
+    from langgraph.graph import END, START, StateGraph
+
+    decided: list[str] = []
+    shield_factory(_allow_decisions(decided))
+
+    class State(TypedDict):
+        value: int
+
+    def inner(state):
+        return {"value": state["value"] + 1}
+
+    child = StateGraph(State)
+    child.add_node("inner", inner)
+    child.add_edge(START, "inner")
+    child.add_edge("inner", END)
+
+    parent = StateGraph(State)
+    parent.add_node("child", child.compile())
+    parent.add_edge(START, "child")
+    parent.add_edge("child", END)
+    app = parent.compile()
+
+    assert app.invoke({"value": 1}) == {"value": 2}
+    assert Counter(_tool_keys(decided)) == {"child": 1, "inner": 1}
+
+    decided.clear()
+    assert asyncio.run(app.ainvoke({"value": 1})) == {"value": 2}
+    assert Counter(_tool_keys(decided)) == {"child": 1, "inner": 1}
+
+
 def test_multiple_clients_never_use_the_latest_client_implicitly(shield_factory):
     calls = {"first": 0, "second": 0}
 
@@ -285,17 +405,16 @@ def test_multiple_clients_never_use_the_latest_client_implicitly(shield_factory)
     assert calls == {"first": 1, "second": 0}
 
 
-_PLAIN_CREWAI_KICKOFF = r"""
+_PLAIN_LANGCHAIN_TOOL = r"""
 import json
 import sys
 import types
 
 import httpx
 
-crewai = types.ModuleType("crewai")
-crewai_tools = types.ModuleType("crewai.tools")
-crewai_base = types.ModuleType("crewai.tools.base_tool")
-crewai_crew = types.ModuleType("crewai.crew")
+langchain_core = types.ModuleType("langchain_core")
+langchain_core_tools = types.ModuleType("langchain_core.tools")
+langchain_core_base = types.ModuleType("langchain_core.tools.base_tool")
 
 executed = {"count": 0}
 
@@ -303,27 +422,24 @@ class BaseTool:
     name = "wire_funds"
     def run(self, *args, **kwargs):
         return self._run(*args, **kwargs)
+    async def arun(self, *args, **kwargs):
+        return self._run(*args, **kwargs)
     def _run(self, *args, **kwargs):
         executed["count"] += 1
         return "wired"
 
-class Crew:
+class Workflow:
     def __init__(self):
         self.tools = [BaseTool()]
-        self.agents = []
-        self.tasks = []
-    def kickoff(self):
-        return self.tools[0].run()
+    def invoke(self):
+        return self.tools[0].run({})
 
-crewai.Crew = Crew
-crewai_tools.BaseTool = BaseTool
-crewai_base.BaseTool = BaseTool
-crewai_crew.Crew = Crew
+langchain_core_tools.BaseTool = BaseTool
+langchain_core_base.BaseTool = BaseTool
 sys.modules.update({
-    "crewai": crewai,
-    "crewai.tools": crewai_tools,
-    "crewai.tools.base_tool": crewai_base,
-    "crewai.crew": crewai_crew,
+    "langchain_core": langchain_core,
+    "langchain_core.tools": langchain_core_tools,
+    "langchain_core.tools.base_tool": langchain_core_base,
 })
 
 from deepintshield import DeepintShield
@@ -336,13 +452,13 @@ def handler(request):
         return httpx.Response(200, json={
             "provider_type": "",
             "agent_configured": False,
-            "agent_subject": "agent:crew-vk",
+            "agent_subject": "agent:workflow-vk",
         })
     if path.endswith("/agentic-new/registry/discover"):
         return httpx.Response(200, json={"blueprint_scan_status": "complete"})
     if path.endswith("/agentic-new/identity/resolve"):
         calls.append(["identity", body])
-        return httpx.Response(200, json={"subject": "user:crew-owner"})
+        return httpx.Response(200, json={"subject": "user:workflow-owner"})
     if path.endswith("/agentic-new/decide"):
         calls.append(["gaf", body])
         return httpx.Response(200, json={
@@ -358,32 +474,32 @@ def handler(request):
 
 shield = DeepintShield(
     virtual_key="sk-ds-test",
-    requester="crew-owner",
+    requester="workflow-owner",
 )
 shield._client.close()
 shield._client = httpx.Client(transport=httpx.MockTransport(handler))
 
 try:
-    Crew().kickoff()
+    Workflow().invoke()
 except PermissionError as exc:
     assert exc._deepintshield_error_code == "guardrail_denied"
 else:
-    raise AssertionError("ordinary Crew.kickoff executed without GAF enforcement")
+    raise AssertionError("ordinary Workflow.invoke executed without GAF enforcement")
 
 gaf = [body for kind, body in calls if kind == "gaf"]
 assert executed["count"] == 0
 assert len(gaf) == 1
-assert gaf[0]["agent"] == "agent:crew-vk"
-assert gaf[0]["user"] == "user:crew-owner"
+assert gaf[0]["agent"] == "agent:workflow-vk"
+assert gaf[0]["user"] == "user:workflow-owner"
 assert not [body for kind, body in calls if kind == "legacy"]
 shield.close()
 print("BLOCKED")
 """
 
 
-def test_plain_crewai_kickoff_is_governed_without_an_sdk_hook_call():
+def test_plain_langchain_core_invoke_is_governed_without_an_sdk_hook_call():
     result = subprocess.run(
-        [sys.executable, "-c", _PLAIN_CREWAI_KICKOFF],
+        [sys.executable, "-c", _PLAIN_LANGCHAIN_TOOL],
         capture_output=True,
         text=True,
         timeout=120,
@@ -818,7 +934,7 @@ def test_a_changed_graph_reports_immediately(shield_factory):
     assert rec.posts[0]["network"]["digest"] != rec.posts[1]["network"]["digest"]
 
 
-# ── the other five frameworks report too (was LangGraph-only) ─────────────
+# ── shared reporting boundaries across frameworks ────────────────────────
 
 
 class FakeTool:
@@ -826,42 +942,42 @@ class FakeTool:
         self.name = name
 
 
-class FakeCrew:
-    """Duck-typed CrewAI Crew: `.agents` + `.tasks`, and a kickoff() the
-    enforcement layer patches into a discovery boundary."""
+class FakeWorkflow:
+    """A tool holder whose native run method is a discovery boundary."""
 
     def __init__(self) -> None:
-        self.agents = [type("A", (), {"role": "Researcher", "tools": [FakeTool("search_docs")]})()]
-        self.tasks = []
-        self.kicked = 0
+        self.name = "Researcher"
+        self.tools = [FakeTool("search_docs")]
+        self.invoked = 0
 
-    def kickoff(self, *args, **kwargs):
-        self.kicked += 1
+    def invoke(self, *args, **kwargs):
+        self.invoked += 1
         return "done"
 
 
 def test_report_topology_on_fires_at_a_run_boundary(shield_factory, monkeypatch):
-    """The shared hook `crewai`/`autogen`/`llamaindex`/`pydanticai` now install:
-    the framework's own run method reports the topology, once per instance, and
-    still returns the framework's own value."""
+    """The shared hook reports topology once per instance at execution and
+    preserves the native run method's return value."""
     rec = Recorder()
     shield = shield_factory(rec.handler)
-    monkeypatch.setattr(FakeCrew, "kickoff", FakeCrew.kickoff)
+    monkeypatch.setattr(FakeWorkflow, "invoke", FakeWorkflow.invoke)
 
     installed = enforcement.report_topology_on(
-        FakeCrew, ("kickoff",)
+        FakeWorkflow, ("invoke",)
     )
-    crew = FakeCrew()
-    enforcement.bind_engine(crew, shield.agentic.engine, recursive=True)
+    workflow = FakeWorkflow()
+    enforcement.bind_engine(workflow, shield.agentic.engine, recursive=True)
     assert installed is True
-    assert crew.kickoff() == "done"      # return value untouched
-    assert crew.kicked == 1
+    assert workflow.invoke() == "done"      # return value untouched
+    assert workflow.invoked == 1
     assert rec.wait()
-    assert rec.posts[0]["framework"] == "crewai"
-    assert {a["key"] for a in rec.posts[0]["agents"]} == {"researcher"}
+    assert rec.posts[0]["framework"] == "generic"
+    assert {a["key"] for a in rec.posts[0]["agents"]} == {
+        registry._registry_key("Researcher")
+    }
 
     rec.hit.clear()
-    crew.kickoff()                        # once per instance
+    workflow.invoke()                        # once per instance
     time.sleep(0.1)
     assert rec.count == 1
 
@@ -878,21 +994,21 @@ def test_run_boundary_reposts_rebound_tool_before_execution(
 
     rec = Recorder()
     shield = shield_factory(rec.handler)
-    monkeypatch.setattr(FakeCrew, "kickoff", FakeCrew.kickoff)
-    assert enforcement.report_topology_on(FakeCrew, ("kickoff",))
-    crew = FakeCrew()
-    crew.agents[0].tools[0].func = safe_search
-    enforcement.bind_engine(crew, shield.agentic.engine, recursive=True)
+    monkeypatch.setattr(FakeWorkflow, "invoke", FakeWorkflow.invoke)
+    assert enforcement.report_topology_on(FakeWorkflow, ("invoke",))
+    workflow = FakeWorkflow()
+    workflow.tools[0].func = safe_search
+    enforcement.bind_engine(workflow, shield.agentic.engine, recursive=True)
 
-    assert crew.kickoff() == "done"
+    assert workflow.invoke() == "done"
     assert rec.wait()
     rec.hit.clear()
-    assert crew.kickoff() == "done"
+    assert workflow.invoke() == "done"
     time.sleep(0.05)
     assert rec.count == 1
 
-    crew.agents[0].tools[0].func = malicious_search
-    assert crew.kickoff() == "done"
+    workflow.tools[0].func = malicious_search
+    assert workflow.invoke() == "done"
     assert rec.wait()
     assert rec.count == 2
     assert rec.posts[0]["network"]["digest"] == rec.posts[1]["network"]["digest"]
@@ -904,30 +1020,29 @@ def test_run_boundary_reposts_rebound_tool_before_execution(
 
 
 def test_report_topology_on_preserves_an_async_boundary(shield_factory):
-    """CrewAI's `kickoff_async` / AutoGen's `run` are coroutines - the wrapper
-    must stay awaitable, or patching them would break the framework outright."""
+    """Async run boundaries must remain awaitable and preserve their result."""
     import asyncio
     import inspect as _inspect
 
-    class AsyncCrew:
+    class AsyncWorkflow:
         def __init__(self) -> None:
-            self.agents = [type("A", (), {"role": "Async Worker", "tools": []})()]
-            self.tasks = []
+            self.name = "Async Worker"
+            self.tools = []
 
-        async def kickoff_async(self, *args, **kwargs):
+        async def ainvoke(self, *args, **kwargs):
             return "async-done"
 
     rec = Recorder()
     shield = shield_factory(rec.handler)
     assert enforcement.report_topology_on(
-        AsyncCrew, ("kickoff_async",)
+        AsyncWorkflow, ("ainvoke",)
     )
-    assert _inspect.iscoroutinefunction(AsyncCrew.kickoff_async)
-    crew = AsyncCrew()
-    enforcement.bind_engine(crew, shield.agentic.engine, recursive=True)
-    assert asyncio.run(crew.kickoff_async()) == "async-done"
+    assert _inspect.iscoroutinefunction(AsyncWorkflow.ainvoke)
+    workflow = AsyncWorkflow()
+    enforcement.bind_engine(workflow, shield.agentic.engine, recursive=True)
+    assert asyncio.run(workflow.ainvoke()) == "async-done"
     assert rec.wait()
-    assert rec.posts[0]["framework"] == "crewai"
+    assert rec.posts[0]["framework"] == "generic"
 
 
 def test_report_topology_never_raises_on_a_broken_engine(monkeypatch):
@@ -988,13 +1103,13 @@ def test_langgraph_failed_compile_report_is_retried_and_blocks(monkeypatch):
 
 
 def test_every_framework_adapter_reports_topology_except_litellm():
-    """Regression for the LangGraph-only asymmetry: five of the six adapters must
+    """Regression for the LangGraph-only asymmetry: execution adapters must
     route through the shared reporter. LiteLLM is the deliberate exception - a
     completion call has no agents/tools/edges to describe."""
     import pathlib
     from importlib import import_module
 
-    for name in ("langgraph", "crewai", "autogen", "llamaindex", "pydanticai", "openai_agents"):
+    for name in ("langgraph", "autogen", "llamaindex", "pydanticai", "openai_agents"):
         module = import_module(f"deepintshield.agentic.integrations.{name}")
         source = pathlib.Path(module.__file__).read_text()
         assert "report_topology" in source, f"{name} never reports its topology"
@@ -1006,7 +1121,7 @@ def test_every_framework_adapter_reports_topology_except_litellm():
 
 def test_litellm_empty_prompt_still_blocks_for_required_approval(shield_factory):
     """System-only/empty-prompt completions are still governed, and every
-    blocking verdict—not only DENY—stops the provider call."""
+    blocking verdict, not only DENY, stops the provider call."""
     from deepintshield.agentic.integrations import litellm as integration
 
     seen: list[dict] = []
@@ -1211,7 +1326,7 @@ import sys
 import hashlib
 
 class Block:
-    BLOCKED = {"langgraph", "crewai", "llama_index", "autogen", "autogen_core",
+    BLOCKED = {"langgraph", "llama_index", "autogen", "autogen_core",
                "autogen_agentchat", "pydantic_ai", "agents", "litellm",
                "langchain_core", "strands", "google", "temporalio",
                "model_tools"}
@@ -1259,11 +1374,15 @@ import sys, types
 
 # A minimal stand-in framework that install_all knows how to guard, imported
 # AFTER the client is built - the case install_all alone could never catch.
-mod = types.ModuleType("litellm")
-def completion(*a, **k):
-    return "raw"
-mod.completion = completion
-sys.modules["_fake_litellm_source"] = mod
+mod = types.ModuleType("langchain_core")
+tools = types.ModuleType("langchain_core.tools")
+class BaseTool:
+    def run(self, *a, **k):
+        return "raw"
+    async def arun(self, *a, **k):
+        return "raw"
+tools.BaseTool = BaseTool
+sources = {"langchain_core": mod, "langchain_core.tools": tools}
 
 from deepintshield import DeepintShield
 shield = DeepintShield(virtual_key="sk-ds-test", base_url="http://127.0.0.1:1")
@@ -1271,25 +1390,26 @@ shield = DeepintShield(virtual_key="sk-ds-test", base_url="http://127.0.0.1:1")
 import importlib.abc, importlib.machinery
 class Loader(importlib.abc.Loader):
     def create_module(self, spec):
-        return sys.modules["_fake_litellm_source"]
+        return sources[spec.name]
     def exec_module(self, module):
-        pass
+        if module.__name__ == "langchain_core":
+            from langchain_core import tools
 class Finder(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        if fullname == "litellm":
-            return importlib.machinery.ModuleSpec("litellm", Loader())
+        if fullname in sources:
+            return importlib.machinery.ModuleSpec(fullname, Loader(), is_package=fullname == "langchain_core")
         return None
 sys.meta_path.insert(0, Finder())
 
-import litellm                       # ← after the client exists
-assert getattr(litellm.completion, "_deepintshield_guarded", False), "late import not guarded"
+import langchain_core                       # ← after the client exists
+assert getattr(langchain_core.tools.BaseTool.run, "_deepintshield_guarded", False), "late import not guarded"
 print("OK")
 """
 
 
 def test_a_framework_imported_after_the_client_is_still_guarded():
     """install_all can only patch what is already in sys.modules, so
-    ``DeepintShield(...)`` then ``import crewai`` used to leave the framework
+    ``DeepintShield(...)`` then ``import langchain_core`` used to leave the framework
     ungoverned and its topology unreported until someone remembered
     ``shield.agentic.enforce()``. The import watch closes that."""
     result = subprocess.run(
@@ -1303,9 +1423,9 @@ def test_a_framework_imported_after_the_client_is_still_guarded():
 _UNSUPPORTED_IMPORTED_FRAMEWORK = """
 import sys, types
 
-crewai = types.ModuleType("crewai")
-crewai.unsupported_api = object()
-sys.modules["crewai"] = crewai
+langchain_core = types.ModuleType("langchain_core")
+langchain_core.unsupported_api = object()
+sys.modules["langchain_core"] = langchain_core
 
 from deepintshield import DeepintShield
 try:
@@ -1313,10 +1433,10 @@ try:
 except Exception as exc:
     assert type(exc) is RuntimeError
     assert getattr(exc, "_deepintshield_error_code", "") == "governance_configuration_error"
-    assert str(exc) == "governance_configuration_error: Agent governance is not fully configured."
+    assert str(exc) == "governance_configuration_error: Agent governance is not fully configured. Please contact your administrator."
     print("BLOCKED")
 else:
-    raise AssertionError("client initialized with an unguardable CrewAI version")
+    raise AssertionError("client initialized with an unguardable LangChain version")
 """
 
 
@@ -1333,18 +1453,18 @@ def test_client_setup_fails_closed_for_an_imported_unsupported_framework():
 
 def test_a_supported_framework_with_no_guardable_boundary_fails_its_late_import():
     script = _LATE_IMPORT.replace(
-        'def completion(*a, **k):\n    return "raw"\nmod.completion = completion',
-        'mod.unsupported_api = object()',
+        'class BaseTool:\n    def run(self, *a, **k):\n        return "raw"\n    async def arun(self, *a, **k):\n        return "raw"',
+        'class BaseTool:\n    unsupported_api = object()',
     ).replace(
-        'import litellm                       # ← after the client exists\n'
-        'assert getattr(litellm.completion, "_deepintshield_guarded", False), "late import not guarded"\n'
+        'import langchain_core                       # ← after the client exists\n'
+        'assert getattr(langchain_core.tools.BaseTool.run, "_deepintshield_guarded", False), "late import not guarded"\n'
         'print("OK")',
         'try:\n'
-        '    import litellm                   # unsupported shape must not escape\n'
+        '    import langchain_core                    # unsupported shape must not escape\n'
         'except Exception as exc:\n'
         '    assert type(exc) is RuntimeError\n'
         '    assert getattr(exc, "_deepintshield_error_code", "") == "governance_configuration_error"\n'
-        '    assert str(exc) == "governance_configuration_error: Agent governance is not fully configured."\n'
+        '    assert str(exc) == "governance_configuration_error: Agent governance is not fully configured. Please contact your administrator."\n'
         '    print("BLOCKED")\n'
         'else:\n'
         '    raise AssertionError("unsupported framework imported ungoverned")',
@@ -1355,3 +1475,177 @@ def test_a_supported_framework_with_no_guardable_boundary_fails_its_late_import(
     )
     assert result.returncode == 0, result.stderr
     assert "BLOCKED" in result.stdout
+
+
+@pytest.mark.parametrize(
+    ("confirmed_by", "notified"),
+    [
+        # The gateway confirms no address: one that predates the field, or one
+        # that set the requester-derived address aside. No e-mail is sent, so
+        # none is promised.
+        ("", ""),
+        # The 202 sighting names the requester the gateway recorded.
+        ("discover", " You will be notified at alice@example.com."),
+        # The 409 registration state names the address it will notify.
+        ("credential_info", " You will be notified at alice@example.com."),
+    ],
+)
+def test_langgraph_pending_registration_message_cites_reference_and_registrant(
+    shield_factory, monkeypatch, confirmed_by, notified,
+):
+    """The first gated node stops with the owner text: reference from the 409
+    body, and the notification sentence only for an address the gateway
+    confirmed. The e-mail-shaped ``requester`` is sent as an advisory hint and
+    never fills the sentence by itself."""
+    from typing import TypedDict
+    from langgraph.graph import END, START, StateGraph
+
+    monkeypatch.setattr(registry, "_enrolment_logged", set())
+    executed = 0
+    sightings: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        registration = {
+            "id": "agnew-rr-first-run",
+            "agent_subject": "agent:first-run-message",
+            "status": "pending",
+        }
+        if path.endswith("/credential-info"):
+            body = {
+                "error": {
+                    "code": "agent_registration_pending",
+                    "message": "PRIVATE: open the review at /workspace/private",
+                },
+                "registration": registration,
+                "review_url": "/workspace/agentic-new/registry?review_registration=private",
+            }
+            if confirmed_by == "credential_info":
+                body["notify_email"] = "alice@example.com"
+            return httpx.Response(409, json=body)
+        if path.endswith("/registry/discover"):
+            sightings.append(_json(request))
+            if confirmed_by == "discover":
+                registration["requester_email"] = "alice@example.com"
+            return httpx.Response(
+                202,
+                json={
+                    "network_id": "network:first-run",
+                    "registration_state": "pending",
+                    "registration": registration,
+                    "blueprint_scan_status": "complete",
+                },
+            )
+        if path.endswith("/agentic-new/identity/resolve"):
+            return httpx.Response(200, json={"subject": "user:alice-example-com"})
+        if path.endswith("/agentic-security/blueprints"):
+            return httpx.Response(200, json={"blueprint_id": "blueprint-test"})
+        return httpx.Response(200, json={})
+
+    shield = shield_factory(handler, agent_name="first-run-message", requester="alice@example.com")
+    shield.agentic.enforce()
+
+    class State(TypedDict):
+        value: int
+
+    def node(state: State) -> State:
+        nonlocal executed
+        executed += 1
+        return state
+
+    graph = StateGraph(State)
+    graph.add_node("node", node)
+    graph.add_edge(START, "node")
+    graph.add_edge("node", END)
+    app = graph.compile()
+
+    with pytest.raises(RuntimeError) as caught:
+        app.invoke({"value": 1})
+
+    assert executed == 0
+    assert caught.value._deepintshield_error_code == "agent_registration_pending"
+    assert str(caught.value) == (
+        "agent_registration_pending: Registration pending. Reference agnew-rr-first-run. "
+        f"Contact your administrator.{notified}"
+    )
+    assert "PRIVATE" not in str(caught.value)
+    assert "review" not in str(caught.value).lower()
+    # Every sighting names the derived address as a hint, never as a claim.
+    assert sightings
+    for sighting in sightings:
+        assert sighting["registered_by_email"] == "alice@example.com"
+        assert sighting["registered_by_source"] == "requester"
+
+
+def _increment(value):
+    return value + 1
+
+
+def test_langgraph_composite_node_first_execution_reuses_its_acknowledged_artifact(
+    shield_factory,
+):
+    """A ``RunnableParallel`` node is reported with its composition as a
+    complete artifact. Its first execution must recognise that acknowledged
+    artifact: one discovery report in total, the decision bound to the
+    composition's fingerprint, and never a second "first-run" report built
+    from the framework method the gate wraps - that report was incomplete,
+    the gateway refused it as blueprint_coverage_incomplete and quarantined
+    the agent whose blueprint had just been approved."""
+    from operator import itemgetter
+    from typing import TypedDict
+
+    from langchain_core.runnables import RunnableLambda, RunnableParallel
+    from langgraph.graph import END, START, StateGraph
+
+    from deepintshield.agentic.manifest import describe
+
+    posts: list[dict] = []
+    decisions: list[dict] = []
+    lock = threading.Lock()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/agentic-new/registry/discover"):
+            with lock:
+                posts.append(_json(request))
+            return httpx.Response(200, json={"blueprint_scan_status": "complete"})
+        if path.endswith("/vk-credential-info"):
+            return httpx.Response(200, json={"provider_type": "", "agent_configured": False})
+        if path.endswith("/agentic-new/decide"):
+            decisions.append(_json(request))
+            return httpx.Response(
+                200, json={"verdict": "ALLOW", "allow": True, "mode": "enforce", "proceed": True},
+            )
+        return httpx.Response(404)
+
+    shield_factory(handler)
+
+    class State(TypedDict):
+        value: int
+
+    graph = StateGraph(State)
+    graph.add_node(
+        "extract", RunnableParallel(value=itemgetter("value") | RunnableLambda(_increment)),
+    )
+    graph.add_edge(START, "extract")
+    graph.add_edge("extract", END)
+    app = graph.compile()
+
+    assert app.invoke({"value": 1}) == {"value": 2}
+
+    with lock:
+        reports = list(posts)
+    assert len(reports) == 1, [report.get("network") for report in reports]
+    report = reports[0]
+    assert report["framework"] == "langgraph"
+    assert report.get("code_artifacts_incomplete") is None
+    assert {(a["subject_kind"], a["subject_key"]) for a in report["code_artifacts"]} == {
+        ("agent", "extract"),
+        ("tool", "extract"),
+    }
+    assert all(entry["status"] == "captured" for entry in report["code_artifact_coverage"])
+    assert all("def _increment" in a["source"] for a in report["code_artifacts"])
+
+    fingerprint = describe(app).to_dict()["tool_fingerprints"]["extract"]
+    assert fingerprint.startswith("src:")
+    assert [d.get("tool_fingerprint") for d in decisions] == [fingerprint]

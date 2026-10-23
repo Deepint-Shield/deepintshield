@@ -28,6 +28,7 @@ import inspect
 from types import SimpleNamespace
 from typing import Any
 
+from ..._compat import call_signature
 from ..errors import (
     AGENT_ACCESS_DENIED,
     AGENT_APPROVAL_PENDING,
@@ -74,8 +75,8 @@ def executable_callbacks(owner: Any, *, prefix: str = "strands") -> CallbackInve
     """Inventory explicitly registered Strands callbacks and hook providers.
 
     The hook registry's callback mapping is a public structural boundary.  We
-    read only that mapping and named provider methods—never executor state or
-    framework modules—then filter inherited Strands implementations.
+    read only that mapping and named provider methods, never executor state or
+    framework modules, and then filter inherited Strands implementations.
     """
     inventories = [
         explicit_callback_inventory(
@@ -273,7 +274,11 @@ def _enforce_middleware_terminal() -> bool:
         original = _executor._make_execute_tool_terminal
         if getattr(original, "_deepintshield_guarded", False):
             return True
-        if tuple(inspect.signature(original).parameters) != ("extra_kwargs",):
+        signature = call_signature(original)
+        if tuple(signature.parameters) not in {
+            ("extra_kwargs",),
+            ("extra_kwargs", "preset_result", "tool_context", "tool_guard"),
+        }:
             return False
         if not {"agent", "tool", "tool_use", "invocation_state"}.issubset(
             getattr(ExecuteToolContext, "__dataclass_fields__", {})
@@ -285,8 +290,13 @@ def _enforce_middleware_terminal() -> bool:
         return False
 
     @functools.wraps(original)
-    def guarded_factory(extra_kwargs: dict[str, Any]) -> Any:
-        terminal = original(extra_kwargs)
+    def guarded_factory(extra_kwargs: dict[str, Any], *args: Any, **kwargs: Any) -> Any:
+        # Strands 1.55.1 adds rejected-call results and background-tool
+        # context/validation to the same terminal. Preserve all native options;
+        # a preset rejection never executes a tool and needs no PDP decision.
+        bound = signature.bind(extra_kwargs, *args, **kwargs)
+        preset_result = bound.arguments.get("preset_result")
+        terminal = original(extra_kwargs, *args, **kwargs)
 
         @public_agentic_boundary
         async def guarded(ctx: Any) -> Any:
@@ -294,7 +304,7 @@ def _enforce_middleware_terminal() -> bool:
                 raise GovernanceConfigurationError(
                     framework="strands", reason="unsupported tool middleware terminal"
                 )
-            if ctx.tool is not None:
+            if ctx.tool is not None and preset_result is None:
                 if not isinstance(ctx.tool_use, dict) or not isinstance(ctx.tool_use.get("input"), dict):
                     raise GovernanceConfigurationError(
                         framework="strands", reason="unsupported final tool arguments"

@@ -1,6 +1,6 @@
 {
   "name": "@deepintshield/openclaw-agentic",
-  "version": "0.1.0",
+  "version": "3.2.0",
   "private": true,
   "type": "module",
   "peerDependencies": {

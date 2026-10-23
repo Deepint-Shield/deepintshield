@@ -91,6 +91,14 @@ def connection_headers(
     if identity:
         token = shield._agent_token()
         if token:
+            if token.startswith("dsrs_"):
+                from .agentic.errors import GovernanceConfigurationError
+
+                # A static header dictionary cannot create a fresh method/URI
+                # bound DPoP proof. Agentic and native MCP use per-request hooks.
+                raise GovernanceConfigurationError(
+                    framework="gateway-broker", code="agent_runtime_request_proof_required",
+                )
             h = _merge_headers(h, {"X-Agent-Token": token})
     if extra:
         h = _merge_headers(h, extra)

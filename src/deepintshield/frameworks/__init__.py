@@ -6,8 +6,8 @@ only obtains their model / embedding client from here so traffic flows
 through the gateway (where input/output/RAG guardrails + observability run
 server-side). No DeepintShield types leak into their agent code.
 
-Accessed via ``shield.bind("crewai")`` or the convenience accessors
-``shield.crewai()`` / ``shield.openai_agents()`` / ``shield.llamaindex()`` /
+Accessed via ``shield.bind("langgraph")`` or the convenience accessors
+``shield.openai_agents()`` / ``shield.llamaindex()`` /
 ``shield.autogen()`` - each returns a :class:`FrameworkBinder`.
 """
 
@@ -35,7 +35,7 @@ _ALIASES = {
     "adk": "google_adk",
 }
 
-_KNOWN = {"langgraph", "crewai", "openai_agents", "llamaindex", "autogen", "pydanticai", "strands", "google_adk"}
+_KNOWN = {"langgraph", "openai_agents", "llamaindex", "autogen", "pydanticai", "strands", "google_adk"}
 
 
 class FrameworkBinder:

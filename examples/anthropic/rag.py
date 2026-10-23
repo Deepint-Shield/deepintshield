@@ -1,3 +1,8 @@
+"""Evaluate content safety after the application authorizes document access.
+
+For private corpora, enforce user permissions before sending retrieved chunks.
+"""
+
 import os
 
 from deepintshield import DeepintShield, build_chunk

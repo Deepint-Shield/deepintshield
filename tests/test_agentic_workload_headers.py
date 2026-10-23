@@ -10,7 +10,7 @@ import pytest
 
 from deepintshield.agentic import execution, gate, identity, registry
 from deepintshield.agentic.credentials import StaticAgentCredential
-from deepintshield.agentic.errors import GovernanceConfigurationError
+from deepintshield.agentic.errors import GatewayUnavailable, GovernanceConfigurationError
 from deepintshield.agentic.types import DelegationContext
 
 
@@ -236,6 +236,8 @@ def test_changed_blueprint_returns_precise_review_code(
 
 def test_first_run_registration_precedes_blueprint_review_code(shield_factory):
     def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/credential-info"):
+            return httpx.Response(409, json={"error": {"code": "agent_registration_pending"}})
         if request.url.path.endswith("/registry/discover"):
             return httpx.Response(
                 202,
@@ -268,6 +270,8 @@ def test_first_run_lifecycle_precedes_transient_model_code_and_reposts(
 
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal calls
+        if request.url.path.endswith("/credential-info"):
+            return httpx.Response(409, json={"error": {"code": "agent_registration_pending"}})
         if request.url.path.endswith("/registry/discover"):
             calls += 1
             return httpx.Response(
@@ -398,6 +402,8 @@ def test_minimal_registration_capture_is_single_flight(shield_factory):
 
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal calls
+        if request.url.path.endswith("/credential-info"):
+            return httpx.Response(409, json={"error": {"code": "agent_registration_pending"}})
         assert request.url.path.endswith("/registry/discover")
         assert request.headers.get("X-Agent-Token", "") == ""
         with call_lock:
@@ -684,6 +690,74 @@ def test_enabled_agent_capture_retries_once_with_workload_proof(shield_factory):
     assert registry.ensure_registration_capture(engine, "read_account") is True
     assert proofs == ["", "enabled-proof"]
     assert engine._registration_captured_tools == {"read_account"}
+
+
+@pytest.mark.parametrize("proof_mode", ["available", "undeclared", "failed"])
+def test_pending_minimal_capture_submits_available_proof_without_approving(
+    shield_factory, proof_mode,
+):
+    proofs = []
+
+    def handler(request):
+        if request.url.path.endswith("/credential-info"):
+            return httpx.Response(409, json={"error": {"code": "agent_registration_pending"}})
+        assert request.url.path.endswith("/registry/discover")
+        proofs.append(request.headers.get("X-Agent-Token", ""))
+        return httpx.Response(202, json={"registration_state": "pending"})
+
+    engine = shield_factory(handler, agent_name="pending").agentic.engine
+    if proof_mode == "available":
+        engine.set_agent_credential(StaticAgentCredential("pending-proof"))
+    elif proof_mode == "failed":
+        class BrokenCredential:
+            def get_token(self):
+                raise RuntimeError("private issuer failure")
+        engine.set_agent_credential(BrokenCredential())
+    result = registry._post_discover(
+        engine, {}, timeout=1, bootstrap_without_workload_proof=True,
+    )
+    if proof_mode == "failed":
+        assert result["error"] == "gateway_unavailable"
+        assert proofs == [""]
+    else:
+        assert result["registration_state"] == "pending"
+        assert proofs == (["", "pending-proof"] if proof_mode == "available" else [""])
+
+
+def test_pending_minimal_capture_keeps_sighting_when_credential_exchange_fails(
+    shield_factory,
+):
+    """A pending registration is already filed; a credential the process cannot
+    exchange yet (direct Entra on a laptop) leaves that sighting as the result."""
+    proofs = []
+
+    def handler(request):
+        if request.url.path.endswith("/credential-info"):
+            return httpx.Response(
+                409,
+                json={
+                    "error": {"code": "agent_registration_pending"},
+                    "registration": {"id": "agnew-rr-pending", "status": "pending"},
+                },
+            )
+        assert request.url.path.endswith("/registry/discover")
+        proofs.append(request.headers.get("X-Agent-Token", ""))
+        return httpx.Response(202, json={"registration_state": "pending"})
+
+    engine = shield_factory(handler, agent_name="pending-exchange").agentic.engine
+
+    class ExchangeFailingCredential:
+        def get_token(self):
+            raise GatewayUnavailable(reason="private issuer failure", code="credential_exchange_failed")
+
+    engine.set_agent_credential(ExchangeFailingCredential())
+    result = registry._post_discover(
+        engine, {}, timeout=1, bootstrap_without_workload_proof=True,
+    )
+
+    assert "error" not in result
+    assert result["registration_state"] == "pending"
+    assert proofs == [""]
 
 
 def test_minimal_capture_normalizes_tool_subject_prefix(shield_factory):

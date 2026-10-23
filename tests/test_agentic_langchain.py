@@ -77,7 +77,7 @@ def test_guard_denies_tool(shield_factory):
         write_ledger.invoke({"row": "x"}, config={"callbacks": [guard]})
     assert exc.value._deepintshield_error_code == "guardrail_denied"
     assert str(exc.value) == (
-        "guardrail_denied: Agentic authorization denied this operation."
+        "guardrail_denied: Access to this operation is denied. Please contact your administrator."
     )
 
 

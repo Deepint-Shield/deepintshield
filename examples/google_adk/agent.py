@@ -4,7 +4,7 @@ Constructing ``DeepintShield`` arms ADK's normal, live and threaded dispatch
 functions. Every agent and tool is governed without adding a plugin to the
 runner.
 
-    pip install 'deepintshield[google-adk]'   # google-adk
+    pip install 'deepintshield[google-adk]==3.2.0'   # google-adk
 """
 import os
 

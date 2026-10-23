@@ -3,9 +3,17 @@
 
 # deepintshield - examples
 
-These examples target SDK **2.8.0** and DeepIntShield Server **2.8.0**.
-Install the matching release with `pip install "deepintshield==2.8.0"`
+These examples target SDK **3.2.2** and DeepIntShield Server **3.2.2**.
+Install the matching release with `pip install "deepintshield==3.2.2"`
 and add the extras required by your example.
+
+SDK and Server 3.2.2 include Entra gateway-runtime authentication and managed
+LangGraph execution. For a complete local
+`test2.py` / `math-agent` run, follow
+[Microsoft and local gateway setup](../../deepintshield_docs/src/content/docs/enterprise/entra-local-gateway.mdx).
+It installs `runtime,langgraph`, keeps Entra credentials in the gateway,
+authorizes the SDK runtime key, and uses an empty requester for the autonomous
+arithmetic example before normal code/access approval.
 
 Every example is runnable and uses the real provider/framework SDK. Constructing
 `DeepintShield` automatically arms supported agent frameworks; a binder is only
@@ -14,8 +22,8 @@ first:
 
 ```bash
 export DEEPINTSHIELD_VIRTUAL_KEY="<virtual-key>"
-# REQUIRED for every agentic example. The agent name is this workload's
-# identity in the Registry and has no default: two workloads sharing a name
+# REQUIRED for every agentic example. A stable name selects this logical agent
+# in the Registry and has no default: two workloads sharing a name
 # share one registration, and an unnamed client stops with
 # `agent_name_required` rather than resolving to whichever agent the key
 # happens to be bound to.
@@ -24,6 +32,8 @@ export DEEPINTSHIELD_AGENT_NAME="my-agent"
 export DEEPINTSHIELD_BASE_URL="https://gateway.example.com"
 # optional: the acting user or service account
 export DEEPINTSHIELD_REQUESTER="user@example.com"
+# for a new agent: the developer who registers it (your work e-mail)
+export DEEPINTSHIELD_REGISTERED_BY="developer@example.com"
 
 python examples/agentic/status.py        # is this agent governed yet?
 python examples/openai/chat.py
@@ -31,10 +41,10 @@ python examples/openai/async_chat.py     # native AsyncOpenAI
 python examples/openai/responses.py     # GPT-6 Astra via Responses
 python examples/openai/responses.py --stream
 python examples/agentic/decorator.py
-python examples/crewai/transparent.py
+python examples/langgraph/transparent.py
 ```
 
-Install the matching extra per example, e.g. `pip install 'deepintshield[crewai]'`.
+Install the matching extra per example, e.g. `pip install 'deepintshield[langgraph]==3.2.2'`.
 
 The primary inference path is `shield.openai()` / `shield.async_openai()`, or
 `OpenAI(**shield.openai_config())` when constructing a native client yourself.
@@ -43,7 +53,7 @@ the generic examples. Framework binders return native model objects; native
 graphs, agents, runners and workers still execute your application.
 
 Install framework examples in the separate tested dependency combinations in
-the [SDK README](../README.md#install). Current CrewAI/LlamaIndex require
+the [SDK README](../README.md#install). Current LlamaIndex requires
 OpenAI 2; current PydanticAI/OpenAI Agents require OpenAI 3. The legacy `[all]`
 extra does not guarantee all latest upstream releases can coexist.
 
@@ -72,11 +82,114 @@ Astra supports `low`, `medium`, `high`, `xhigh`, and `max` reasoning;
 
 For a new `DEEPINTSHIELD_AGENT_NAME`, a successful first native execution
 capture raises a marked `RuntimeError` with code `agent_registration_pending`
-and trusted summary/action fields. Raw gateway detail is never rendered.
-Open **Agentic → Work Queue**, select **Review** there or under **Assets →
-Agents**, complete the single registration form, and select **Approve &
-activate**. Then rerun the same example. The interface owns the human-readable
+(or `agent_runtime_enrollment_pending` when the run enrolled a runtime key)
+and trusted summary/action fields. Its message is
+`Registration pending. Reference <registration id> · runtime key SHA256:<thumbprint>. Contact your administrator. You will be notified at <email>.`
+with unknown clauses omitted. The last sentence appears only when the gateway
+confirms the address it will notify. Raw gateway detail and review links are
+never rendered, and the SDK does not wait for approval.
+An administrator opens **Agentic → Agents → Needs attention**, selects **Review** there or under **Agents →
+Agent inventory**, and completes the review: choose an active human owner, configure workload credentials and
+verify matching proof after discovery, review the completed code scan, and
+select the exact actions/resource permissions. Complete **Runtime access** and **Validate changes**, then read the exact
+proposal in **Review & decide** and select **Confirm approval and access**. This confirms the
+registration, exact blueprint, and selected access plan together. Check the saved approval and selected grants, then inspect **Runtime access**
+for server readiness and execution state. Use **Resume saved approval** for
+incomplete access and resolve remaining requirements before rerunning. The interface owns the human-readable
 explanation; examples do not catch normal governance outcomes to reformat them.
+
+An expected identity declaration is not proof. Use **Approve as VK-trusted
+(development only)** only when the deployment deliberately accepts unattested Virtual-Key trust,
+not as a fix for missing credentials required by a provider-backed deployment.
+
+Provision a workload identity once for a logical agent and environment, then
+reuse it across runs and replicas. One human can own many agents. Use separate
+identities for independently controlled permissions or revocation. In
+**Agentic → Identities → Provisioning**, customer-approved management connections
+can create or link Entra Agent ID, Keycloak, Auth0, or Okta identities. This is
+separate from runtime **Identity providers**. Managed identities can be disabled
+or retired; linked identities remain read-only and keep their existing
+credentials. Provisioning never replaces workload proof, code review, or access
+approval. See [the workload setup guide](https://aidocs.deepintshield.com/enterprise/agent-workload-identity/#provision-identities-from-deepintshield).
+
+For shared Entra setup, save and validate an explicit empty identity list before
+creating the first child. It admits nobody until provisioning adds a child ID.
+**Authorize provisioning** reuses the selected verifier's settings; do not create
+another verifier or invent a placeholder client ID for each agent.
+
+Approval has no fixed run count or registration expiry, but credentials, the
+accepted blueprint, grants, and policy must still allow every protected action.
+**Block runtime drift** defaults off under **Policy & Access → Runtime policy →
+Blueprint protection**. On requires review for every newly observed digest,
+including clean changes and rollback; off retains mandatory risk-based scans
+and does not release existing quarantine. Existing SDK change reporting is
+sufficient; arbitrary host and unreported remote changes are outside coverage.
+See the [simple-math-agent walkthrough](https://aidocs.deepintshield.com/sdk/agents-agentic/#first-run-simple-math-agent).
+
+## Provisioned OIDC credentials
+
+`agentic/provisioned_oidc.py` is a standard-library launcher for secret-based
+Keycloak, Auth0, and Okta clients created by the provisioning connectors. Use
+Vault Agent or your deployment's secret integration to render the selected
+KV v2 record's inner `data.data` object to a file readable only by the workload.
+Authenticate to Vault as the workload; do not give it the gateway's provisioning
+Vault token or an identity-provider management credential.
+
+The file has this shape after delivery (illustrative values only):
+
+```json
+{
+  "ready": true,
+  "client_id": "provisioned-client-id",
+  "client_secret": "DELIVERED_BY_THE_SECRET_MANAGER",
+  "issuer": "https://sso.example.com/realms/agents",
+  "token_endpoint": "https://sso.example.com/realms/agents/protocol/openid-connect/token",
+  "audience": "deepintshield",
+  "scopes": ["workload"]
+}
+```
+
+Keep the gateway, virtual key, and friendly agent name in the ordinary
+environment, then launch the example without a shell or secrets in arguments:
+
+```bash
+python examples/agentic/provisioned_oidc.py \
+  --provider keycloak --record /run/secrets/agent-oidc.json \
+  -- python examples/langgraph/transparent.py
+```
+
+Select `auth0` or `okta` for the corresponding connection. The launcher refuses
+staged records (`ready: false`), missing credentials, and invalid token endpoints.
+It does not print the record or retrieve it from Vault. Restrict access to both
+the file and the child process environment. The record's `ready` flag confirms
+credential delivery, not registry approval or permission to call tools.
+
+The launcher sets the following values for the child process:
+
+| Environment variable | Source or behavior |
+| --- | --- |
+| `OIDC_CLIENT_ID` | Ready record's `client_id` |
+| `OIDC_CLIENT_SECRET` | Ready record's `client_secret` |
+| `OIDC_TOKEN_ENDPOINT` | Ready record's `token_endpoint` |
+| `OIDC_CLIENT_AUTH_METHOD` | `client_secret_post`, matching these provisioned clients |
+| `OIDC_SCOPES` | Space-separated record scopes; an empty list requests no scopes |
+| `OIDC_AUDIENCE` | Record audience for Auth0; empty for Keycloak/Okta, whose configured issuers set token audience |
+| `OIDC_RESOURCE` | Empty; these connector configurations do not use a token-request resource parameter |
+
+SDK 3.2.1 includes the `OIDC_SCOPES` override. Outside this
+launcher, leaving that variable unset uses the verification provider's default
+scopes; setting it to empty requests no scopes. The gateway continues to verify
+issuer, audience, and the exact expected identity. Configure its shared Generic
+OIDC provider without a single-client default, as described in the workload guide.
+
+For Auth0/Okta public-key clients, register only the public RSA JWKS and keep
+the private key with the workload. Configure `OIDC_CLIENT_AUTH_METHOD=private_key_jwt`,
+`OIDC_PRIVATE_KEY_FILE`, and the matching `OIDC_PRIVATE_KEY_KID` separately;
+this secret-based launcher does not support that flow. Okta rotation adds
+public keys while retaining existing ones. The other connectors do not offer
+rotation, and none offers automatic secret rotation. Entra uses an existing
+blueprint with customer-configured host federation and the Azure SDK extra,
+so it also does not use this launcher.
 
 ---
 
@@ -90,14 +203,36 @@ explanation; examples do not catch normal governance outcomes to reformat them.
 | `agentic/decorator.py` | Advanced explicit per-function `@shield.agentic.tool` API |
 | `agentic/decide.py` | Advanced direct PDP probe returning the raw verdict |
 | `agentic/identity.py` | Advanced diagnostics for the discovered Entra/ZeroID/OIDC binding |
+| `agentic/provisioned_oidc.py` | Start a secret-based OIDC workload from a mounted Vault record only after delivery is ready |
 | `agentic/guard.py` | Native LangChain tool execution with automatic enforcement |
 | `transparent/connection.py` | Point any OpenAI-compatible client at the gateway via `shield.connection()` |
-| `transparent/create_headers.py` | Portkey-style `shield.create_headers()` injector |
+| `transparent/create_headers.py` | Gateway `shield.create_headers()` injector |
 | `transparent/universal_openai.py` | Raw-HTTP pattern (n8n / Flowise / Dify / any platform) |
-| `rag/guard_retriever.py` | Synchronous and asynchronous post-retrieval filtering (ACL / provenance / injection), once per retrieval |
+| `rag/guard_retriever.py` | Synchronous and asynchronous post-retrieval safety filtering, once per retrieval |
 | `rag/guard_embedder.py` | Pre-embedding input screening (PII / injection) |
 
 ## Per provider - chat & RAG (transparent model traffic)
+
+For private corpora, authenticate the user and enforce document permissions in
+your application or retriever before sending content to DeepintShield. The RAG
+examples apply safety policies to already authorized content. A safety `allow`
+decision does not grant document access.
+
+Before running a provider's `rag.py`, register a RAG source in the virtual
+key's workspace and select it using either its ID or its exact registered name:
+
+```bash
+export DEEPINTSHIELD_RAG_SOURCE_ID="qa-support"
+python examples/openai/rag.py
+```
+
+The parameter remains `source_id` for both forms. Name lookup requires the
+gateway's ID-or-name resolution support; no source-list permission or SDK
+lookup is required. The examples default to `kb-public`, which must be a
+registered ID or name in your workspace. Unknown references return HTTP 404
+and ambiguous names return HTTP 409; use the canonical ID to disambiguate.
+See the [RAG contract](../README.md#rag) for per-chunk overrides, renames and
+workspace defaults.
 
 These folders demonstrate the SDK's native client facades. They are not the
 gateway provider inventory. The `openai/` and `transparent/` patterns can use
@@ -131,7 +266,6 @@ Each folder has `transparent.py` (native model via the gateway) and
 | --- | --- | --- |
 | `langgraph/` | `transparent.py`, `agent.py`, `custom_nodes.py` | `tool_gating.py` |
 | `langchain/` | `chat.py`, `rag.py`, `mcp.py` | (use `agentic/decorator.py`) |
-| `crewai/` | `transparent.py` | `tool_gating.py` |
 | `openai_agents/` | `transparent.py` | `tool_gating.py` |
 | `llamaindex/` | `transparent.py`, `rag.py` | `tool_gating.py` |
 | `autogen/` | `transparent.py` | `tool_gating.py` |
@@ -175,10 +309,10 @@ native paths instead of the deprecated 2.x `Tool` conversion helpers.
 **Two ways to protect an agent:**
 
 1. **Transparent** - optionally get your model/embeddings from a binder
-   (`shield.bind("crewai").llm(...)`, `shield.bind("langgraph").model(...)`,
+   (`shield.bind("llamaindex").llm(...)`, `shield.bind("langgraph").model(...)`,
    `shield.connection()`). Guardrails,
    observability and identity run server-side with no changes to your agent code.
 2. **Enforcement** - supported agent frameworks are gated automatically.
-   Keep native `compile()`, `invoke()`, `run()`, and `kickoff()` calls.
+   Keep native `compile()`, `invoke()`, and `run()` calls.
    `@shield.agentic.tool(...)` and `shield.rag.guard_retriever(...)` are advanced
    framework-independent boundaries.

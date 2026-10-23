@@ -99,7 +99,11 @@ def test_genai_automatic_function_roundtrip_preserves_signatures(shield_factory,
                                        "thoughtSignature": "c2lnbmF0dXJl"}])
         return _response(request, [{"text": "5"}])
 
-    shield = shield_factory(lambda _: pytest.fail("unexpected discovery call"), base_url="https://gateway.invalid")
+    shield = shield_factory(
+        lambda _: pytest.fail("unexpected discovery call"),
+        base_url="https://gateway.invalid",
+        runtime_config_handler=lambda _: httpx.Response(200, json={"security_enabled": False, "available": True, "plan": "business", "reason": "workspace_disabled"}),
+    )
     with httpx.Client(transport=httpx.MockTransport(handler)) as transport:
         client = shield.genai(http_options=types.HttpOptions(httpx_client=transport))
         try:
@@ -232,7 +236,11 @@ async def test_genai_async_chat_executes_callable_roundtrip(shield_factory, stre
             return _response(request, [{"functionCall": {"name": "add", "args": {"a": 2, "b": 3}}}])
         return _response(request, [{"text": "5"}])
 
-    shield = shield_factory(lambda _: pytest.fail("unexpected discovery call"), base_url="https://gateway.invalid")
+    shield = shield_factory(
+        lambda _: pytest.fail("unexpected discovery call"),
+        base_url="https://gateway.invalid",
+        runtime_config_handler=lambda _: httpx.Response(200, json={"security_enabled": False, "available": True, "plan": "business", "reason": "workspace_disabled"}),
+    )
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as transport:
         client = shield.genai(http_options=types.HttpOptions(httpx_async_client=transport))
         try:

@@ -13,17 +13,55 @@ from typing import TYPE_CHECKING, Any, Callable, Iterator, Optional
 
 from .decorators import shield_tool
 from .engine import AgenticEngine
+from ..errors import _REGISTRATION_CONTACT
 from .errors import (
     DeepIntShieldError,
     GovernanceConfigurationError,
+    format_registration_message,
     public_agentic_boundary,
+    public_agentic_error_details,
 )
 from .identity import PrincipalBinding, obo_actor_chain, resolve_principal
 from .obligations import digest
+from .runtime import passthrough_decision, security_enabled
 from .types import ContextBag, Decision, DelegationContext, VKCredentialInfo
 
 if TYPE_CHECKING:
     from ..client import DeepintShield
+
+
+_STATUS_ERROR_CODES = {
+    "pending": "agent_registration_pending",
+    "approved": "governance_configuration_error",
+    "denied": "agent_registration_denied",
+    "quarantined": "agent_quarantined",
+    "not_registered": "agent_not_registered",
+}
+# Review links and console paths are administrator-facing; a workload's
+# healthcheck never shows them, whatever state the gateway reports.
+_PRIVATE_STATUS_KEYS = ("review_url",)
+
+
+def _public_status_body(body: dict) -> dict:
+    public = {key: value for key, value in body.items() if key not in _PRIVATE_STATUS_KEYS}
+    action = public.get("action")
+    if isinstance(action, dict):
+        public["action"] = {key: value for key, value in action.items() if key != "path"}
+    return public
+
+
+def _status_guidance(code: str | None, body: dict | None = None) -> dict:
+    details = public_agentic_error_details(code or "agentic_error")
+    return {
+        **(body or {"state": "unknown"}),
+        "reason": (
+            details["message"]
+            if code
+            else f"Agent registration status is unknown. {details['action']}"
+        ),
+        "action": details["action"],
+    }
+
 
 class AgenticSurface:
     """``shield.agentic`` - agentic (PDP) tool gating across frameworks."""
@@ -39,9 +77,11 @@ class AgenticSurface:
 
     @public_agentic_boundary
     def enforce(self) -> list[str]:
-        """Install enforcement guards so every framework's tools/graphs are gated
-        without an explicit ``govern()`` - ``compile()``/tool execution always
-        passes through the PDP. Auto-called for any framework already imported;
+        """Install guards so enabled workspace security applies automatically.
+
+        No explicit ``govern()`` is required. Runtime configuration is checked
+        on native execution; explicit disabled settings skip Agentic calls.
+        Auto-called for any framework already imported;
         late imports are watched and armed automatically. Execution guards are
         fail-closed; optional discovery stays fail-open. Calling this method
         explicitly is idempotent and returns the newly guarded frameworks. The
@@ -233,11 +273,16 @@ class AgenticSurface:
     def status(self) -> dict:
         """What state this workload's enrolment is in, from the server.
 
-        Returns ``{"state": …, "reason": …, "action": …, "review_url": …}``
-        where state is one of ``live``, ``pending``, ``denied``,
-        ``quarantined`` or ``not_registered``. Use it in a startup healthcheck
+        Returns ``{"state": …, "reason": …, "action": …, "registration_id": …}``
+        where state is one of ``live``, ``pending``, ``approved``, ``denied``,
+        ``quarantined`` or ``not_registered``. ``approved`` without ``live``
+        still needs its governance profile enabled. Use it in a startup healthcheck
         so a workload can refuse to serve traffic it knows will be denied,
-        rather than discovering that one governed call at a time."""
+        rather than discovering that one governed call at a time. A pending
+        registration reports its reference, its runtime-key thumbprint and,
+        when the gateway confirms one, the e-mail that will be notified;
+        blocked states provide brief administrator guidance. Review links are
+        never returned."""
         parent = self._parent_ref()
         if parent is None:
             return {"state": "unknown", "reason": "the SDK client has been closed"}
@@ -250,16 +295,62 @@ class AgenticSurface:
                 timeout=parent.timeout,
             )
             if response.status_code >= 400:
-                return {
-                    "state": "unknown",
-                    "reason": f"the gateway returned {response.status_code}",
-                }
+                code = {
+                    401: "authentication_failed",
+                    403: "permission_denied",
+                }.get(response.status_code, "registry_unavailable")
+                return _status_guidance(code)
             body = response.json()
-            return body if isinstance(body, dict) else {"state": "unknown"}
-        except Exception as exc:  # network/transport - never raise from status()
-            return {"state": "unknown", "reason": str(exc)}
+            if not isinstance(body, dict):
+                return _status_guidance("invalid_gateway_response")
+            body = _public_status_body(body)
+            state = body.get("state")
+            try:
+                self.engine._note_registration(body)
+            except Exception:
+                pass
+            if state == "live":
+                return body
+            if not isinstance(state, str) or not state.strip():
+                return _status_guidance(
+                    "invalid_gateway_response", {**body, "state": "unknown"}
+                )
+            code = _STATUS_ERROR_CODES.get(state)
+            result = _status_guidance(code, body)
+            if state == "pending":
+                context = self.engine._registration_context(body)
+                result["reason"] = format_registration_message(
+                    code,
+                    reference=context.get("registration_id", ""),
+                    thumbprint=context.get("key_thumbprint", ""),
+                    email=context.get("notify_email", ""),
+                )
+                result["action"] = _REGISTRATION_CONTACT
+            return result
+        except ValueError:
+            return _status_guidance("invalid_gateway_response")
+        except Exception:  # network/transport - never raise from status()
+            return _status_guidance("registry_unavailable")
 
     # ── direct decide ──────────────────────────────────────────────────────
+
+    @public_agentic_boundary
+    def commit_task_memory(
+        self, slot: str, value: bytes, expected_version: int,
+        *, receipt_id: str = "", task_id: str = "",
+    ) -> dict:
+        """Record an authenticated digest commitment after the application writes memory.
+
+        One authorized writer receipt can commit once, using exact version
+        comparison. The server stores a digest; raw bytes remain in the app.
+        This does not assert content safety or tool execution completion.
+        """
+        from .task_memory import commit_task_memory
+
+        return commit_task_memory(
+            self.engine, slot, value, expected_version,
+            receipt_id=receipt_id, task_id=task_id,
+        )
 
     @public_agentic_boundary
     def decide(
@@ -294,6 +385,8 @@ class AgenticSurface:
                     reason="decision context or tool is required",
                     code="agent_decision_context_missing",
                 ) from None
+            if not security_enabled(self.engine):
+                return passthrough_decision()
             dc = DelegationContext(
                 tool=tool,
                 args_digest=digest((), {"args": args}),
@@ -361,7 +454,7 @@ class AgenticSurface:
           this enforcement at their native build/run boundary, so new
           applications do not need to add this callback.
         * ``shield.agentic.guard(target)`` - instrument a framework object in
-          place (a compiled LangGraph, a CrewAI tool / list of tools, an OpenAI
+          place (a compiled LangGraph, a tool / list of tools, an OpenAI
           Agents ``Agent`` or a PydanticAI ``Agent``) and return it. Equivalent
           to calling the matching adapter method, but auto-detected so callers
           don't have to name their framework.
@@ -386,7 +479,7 @@ class AgenticSurface:
 
         This method remains for older applications that already call it. New
         applications keep their tools/graph in plain third-party shape:
-        supported framework ``compile()``/``run()``/``kickoff()`` boundaries
+        supported framework ``compile()``/``run()`` boundaries
         perform discovery and enforcement automatically. For MCP tools routed
         through the gateway no client instrumentation is needed.
         """
@@ -433,9 +526,11 @@ class AgenticSurface:
             isinstance(oa_tools, (list, tuple)) and oa_tools and hasattr(oa_tools[0], "on_invoke_tool")
         ):
             return self.openai_agents(target)
-        # Everything else that looks like a tool / list of tools (CrewAI
-        # BaseTool, a LangChain StructuredTool, …) - gate the tool callable.
-        return self.crewai(target)
+        # A generic tool / list of tools (such as a LangChain StructuredTool)
+        # uses the explicit callable guard without framework-specific hooks.
+        from .integrations.generic_tools import shield_tools
+
+        return shield_tools(target, engine=self.engine)
 
     # ── framework enforcement adapters (L2) ───────────────────────────────
 
@@ -444,12 +539,6 @@ class AgenticSurface:
         from .integrations.langgraph import shield_graph
 
         return shield_graph(graph, engine=self.engine)
-
-    @public_agentic_boundary
-    def crewai(self, tools: Any) -> Any:
-        from .integrations.crewai import shield_tools
-
-        return shield_tools(tools, engine=self.engine)
 
     @public_agentic_boundary
     def openai_agents(self, target: Any) -> Any:

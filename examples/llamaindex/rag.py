@@ -1,6 +1,10 @@
 """Guard a LlamaIndex retriever - post-retrieval chunk filtering through the
 gateway. LlamaIndex returns NodeWithScore objects, so a `chunk_mapper` maps
-each node to the chunk shape the gateway expects."""
+each node to the chunk shape the gateway expects.
+
+For private corpora, configure the retriever to enforce document permissions
+before returning nodes. DeepintShield then evaluates their content safety.
+"""
 from llama_index.core import Document, Settings, VectorStoreIndex
 
 from deepintshield import DeepintShield, build_chunk

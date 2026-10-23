@@ -59,11 +59,14 @@ class MCPClient:
         each caller/delegated subject rather than mutating shared headers.
         """
         self._shield.virtual_key_or_raise()
-        return self._shield.connection(
+        url, headers = self._shield.connection(
             provider="mcp",
             identity=identity,
             extra=extra_headers,
         )
+        from ._workload import gateway_task_headers
+
+        return url, gateway_task_headers(self._shield, headers)
 
     def connect(
         self,
@@ -138,7 +141,7 @@ class MCPClient:
         warnings.warn(
             f"MCPClient.{method}() is a deprecated 2.x compatibility shim; "
             "use MCPClient.connect() or MCPClient.connection() with an official "
-            "MCP/framework SDK. It will be removed in DeepIntShield 3.0.",
+            "MCP/framework SDK. It will be removed in a future major release.",
             DeprecationWarning,
             stacklevel=3,
         )
@@ -190,11 +193,24 @@ class MCPClient:
                 "arguments": encoded_arguments,
             },
         }
+        from ._workload import gateway_task_headers
+
+        headers = gateway_task_headers(self._shield, self._agent_identity_headers(extra_headers))
+        if any(key.lower() in {"x-deepintshield-task-mandate", "x-ds-task-mandate"} for key in headers):
+            if not any(key.lower() == "x-agent-token" for key in headers):
+                headers.update(self._shield.agentic.engine.workload_headers(
+                    "POST", self._shield.base_url + "/v1/mcp/tool/execute",
+                ))
+        token = next((value for key, value in headers.items() if key.lower() == "x-agent-token"), "")
+        if token and not any(key.lower() == "dpop" for key in headers):
+            headers.update(self._shield.agentic.engine.workload_headers(
+                "POST", self._shield.base_url + "/v1/mcp/tool/execute", token=token,
+            ))
         body = self._shield.request(
             "POST",
             "/v1/mcp/tool/execute",
             json_body=payload,
-            extra_headers=self._agent_identity_headers(extra_headers),
+            extra_headers=headers,
             error_code=ErrorCode.MCP_EXECUTION_FAILED,
             require_object=True,
         )

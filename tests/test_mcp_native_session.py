@@ -69,6 +69,8 @@ def native_module(monkeypatch):
             return False
 
         async def initialize(self):
+            if state.get("initialize_hook") is not None:
+                return await state["initialize_hook"]()
             state["events"].append("initialize")
             if state["initialize_error"] is not None:
                 raise state["initialize_error"]
@@ -76,6 +78,8 @@ def native_module(monkeypatch):
             return SimpleNamespace(protocolVersion="2025-06-18")
 
         async def send_request(self, *args, **kwargs):
+            if state.get("send_hook") is not None:
+                return await state["send_hook"](*args, **kwargs)
             if state["send_error"] is not None:
                 raise state["send_error"]
             return state["send_result"]
@@ -168,7 +172,8 @@ async def test_open_session_uses_gateway_connection_and_native_types(native_modu
     assert shield.connection_calls == [
         {
             "provider": "mcp",
-            "identity": True,
+            # Identity now renews in the HTTP request hook, not static headers.
+            "identity": False,
             "extra": {"x-request-scope": "delegated"},
         }
     ]
@@ -310,3 +315,78 @@ async def test_session_rechecks_closed_state_when_context_is_entered(native_modu
     assert caught.value.code == "client_closed"
     assert shield.connection_calls == []
     assert state["events"] == []
+
+
+class _UnregisteredShield(_Shield):
+    """The gateway refuses to issue workload credentials for this agent."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        from deepintshield.agentic.errors import GovernanceConfigurationError
+
+        def workload_headers(method: str, url: str, *, token: str = "") -> dict[str, str]:
+            raise GovernanceConfigurationError(framework="agentic-new", code="agent_not_registered", status_code=403)
+
+        self.agentic = SimpleNamespace(engine=SimpleNamespace(workload_headers=workload_headers))
+
+
+async def _run_request_hook(state, shield) -> None:
+    """Do what the native transport does: run the hook, then cancel the waiter."""
+    import asyncio
+
+    import httpx
+
+    hook = state["http_kwargs"]["event_hooks"]["request"][0]
+    request = httpx.Request("POST", "https://gateway.example/mcp")
+    try:
+        await hook(request)
+    except Exception:
+        raise asyncio.CancelledError("Cancelled via cancel scope") from None
+
+
+@pytest.mark.asyncio
+async def test_identity_failure_is_the_connection_error_not_a_cancellation(native_module):
+    native, state = native_module
+    shield = _UnregisteredShield()
+
+    async def initialize_like_the_transport():
+        state["events"].append("initialize")
+        await _run_request_hook(state, shield)
+
+    state["initialize_hook"] = initialize_like_the_transport
+
+    with pytest.raises(DeepintShieldError) as caught:
+        async with native.open_mcp_session(shield, identity=True):
+            pytest.fail("a session whose credentials were refused must not be yielded")
+
+    assert caught.value.code == "agent_not_registered"
+    assert state["events"][-3:] == ["session-exit", "transport-exit", "http-exit"]
+
+
+@pytest.mark.asyncio
+async def test_identity_failure_during_a_request_names_the_reason(native_module):
+    native, state = native_module
+    shield = _UnregisteredShield()
+
+    async def send_like_the_transport(*args, **kwargs):
+        await _run_request_hook(state, shield)
+
+    state["send_hook"] = send_like_the_transport
+
+    async with native.open_mcp_session(shield, identity=True) as session:
+        with pytest.raises(DeepintShieldError) as caught:
+            await session.send_request(SimpleNamespace(root=SimpleNamespace(method="tools/call")), object())
+
+    assert caught.value.code == "agent_not_registered"
+
+
+@pytest.mark.asyncio
+async def test_a_real_cancellation_without_an_identity_failure_still_propagates(native_module):
+    import asyncio
+
+    native, state = native_module
+    state["send_error"] = asyncio.CancelledError("Cancelled via cancel scope")
+
+    async with native.open_mcp_session(_Shield()) as session:
+        with pytest.raises(asyncio.CancelledError):
+            await session.send_request(SimpleNamespace(root=SimpleNamespace(method="tools/list")), object())

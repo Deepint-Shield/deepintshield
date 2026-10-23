@@ -95,6 +95,7 @@ class ErrorCode(str, Enum):
     GATEWAY_UNAVAILABLE = "gateway_unavailable"
     INVALID_GATEWAY_RESPONSE = "invalid_gateway_response"
     AGENT_REGISTRATION_PENDING = "agent_registration_pending"
+    REGISTRATION_REQUESTER_MISMATCH = "registration_requester_mismatch"
     AGENT_NOT_REGISTERED = "agent_not_registered"
     AGENT_REGISTRATION_DENIED = "agent_registration_denied"
     AGENT_REGISTRATION_NOT_READY = "agent_registration_not_ready"
@@ -130,6 +131,54 @@ class ErrorCode(str, Enum):
     CREDENTIAL_PROVIDER_UNSUPPORTED = "credential_provider_unsupported"
     CREDENTIAL_DEPENDENCY_MISSING = "credential_dependency_missing"
     CREDENTIAL_EXCHANGE_FAILED = "credential_exchange_failed"
+    CREDENTIAL_HOST_IDENTITY_MISSING = "credential_host_identity_missing"
+    CREDENTIAL_DPOP_CONFIGURATION_ERROR = "credential_dpop_configuration_error"
+    CREDENTIAL_DPOP_PROVIDER_UNSUPPORTED = "credential_dpop_provider_unsupported"
+    CREDENTIAL_DPOP_NONCE_FAILED = "credential_dpop_nonce_failed"
+    AGENT_RUNTIME_CONFIGURATION_ERROR = "agent_runtime_configuration_error"
+    AGENT_RUNTIME_KEY_UNAVAILABLE = "agent_runtime_key_unavailable"
+    AGENT_RUNTIME_ENROLLMENT_PENDING = "agent_runtime_enrollment_pending"
+    RUNTIME_BINDING_IDENTITY_MISSING = "runtime_binding_identity_missing"
+    MANAGED_EXECUTION_UNAVAILABLE = "managed_execution_unavailable"
+    MANAGED_EXECUTION_BUNDLE_UNSUPPORTED = "managed_execution_bundle_unsupported"
+    MANAGED_EXECUTION_BUNDLE_TOO_LARGE = "managed_execution_bundle_too_large"
+    MANAGED_EXECUTION_DEPENDENCY_MISSING = "managed_execution_dependency_missing"
+    MANAGED_DEPENDENCY_UNAVAILABLE = "managed_dependency_unavailable"
+    MANAGED_PYTHON_VERSION_UNAVAILABLE = "managed_python_version_unavailable"
+    MANAGED_EXECUTION_RESPONSE_INVALID = "managed_execution_response_invalid"
+    MANAGED_EXECUTION_OUTPUT_UNAVAILABLE = "managed_execution_output_unavailable"
+    MANAGED_EXECUTION_SUBMISSION_FAILED = "managed_execution_submission_failed"
+    MANAGED_EXECUTION_CONFIGURATION_INVALID = "managed_execution_configuration_invalid"
+    MANAGED_EXECUTION_CONTEXT_UNSUPPORTED = "managed_execution_context_unsupported"
+    MANAGED_SUBMISSION_CHANGED = "managed_submission_changed"
+    MANAGED_JOB_CHANGED = "managed_job_changed"
+    MANAGED_BLUEPRINT_CHANGED = "managed_blueprint_changed"
+    MANAGED_EXECUTION_PENDING = "managed_execution_pending"
+    MANAGED_EXECUTION_IDENTITY_PENDING = "managed_execution_identity_pending"
+    MANAGED_EXECUTION_RUNTIME_PENDING = "managed_execution_runtime_pending"
+    MANAGED_EXECUTION_ACCESS_PENDING = "managed_execution_access_pending"
+    MANAGED_EXECUTION_FAILED = "managed_execution_failed"
+    MANAGED_EXECUTION_CANCELLED = "managed_execution_cancelled"
+    MANAGED_EXECUTION_EXPIRED = "managed_execution_expired"
+    MANAGED_EXECUTION_RECONCILE_REQUIRED = "managed_execution_reconcile_required"
+    MANAGED_GATEWAY_RUNTIME_REQUIRED = "managed_gateway_runtime_required"
+    AGENT_RETIRED = "agent_retired"
+    AGENT_RUNTIME_BINDING_DISABLED = "agent_runtime_binding_disabled"
+    AGENT_TOOL_SCOPE_MISMATCH = "agent_tool_scope_mismatch"
+    AGENT_TOOL_IDENTITY_REVIEW_REQUIRED = "agent_tool_identity_review_required"
+    AGENT_RUNTIME_EXCHANGE_FAILED = "agent_runtime_exchange_failed"
+    AGENT_RUNTIME_RESPONSE_INVALID = "agent_runtime_response_invalid"
+    AGENT_RUNTIME_ASSERTION_INVALID = "agent_runtime_assertion_invalid"
+    AGENT_RUNTIME_REQUEST_PROOF_REQUIRED = "agent_runtime_request_proof_required"
+    AGENT_RUNTIME_UNAVAILABLE = "agent_runtime_unavailable"
+    AGENT_RUNTIME_AUTHENTICATION_FAILED = "agent_runtime_authentication_failed"
+    AGENT_RUNTIME_INVALID = "agent_runtime_invalid"
+    AGENT_RUNTIME_CONFLICT = "agent_runtime_conflict"
+    AGENT_RUNTIME_CAPACITY_EXCEEDED = "agent_runtime_capacity_exceeded"
+    AGENT_TASK_CONTEXT_INVALID = "agent_task_context_invalid"
+    AGENT_TASK_SECURITY_UNAVAILABLE = "agent_task_security_unavailable"
+    AGENT_TASK_RECEIPT_REQUIRED = "agent_task_receipt_required"
+    AGENT_WORKLOAD_DESTINATION_INVALID = "agent_workload_destination_invalid"
     FRAMEWORK_DEPENDENCY_MISSING = "framework_dependency_missing"
     FRAMEWORK_INTEGRATION_UNSUPPORTED = "framework_integration_unsupported"
     AGENT_DECISION_CONTEXT_MISSING = "agent_decision_context_missing"
@@ -144,11 +193,13 @@ class ErrorCode(str, Enum):
 
     # Known authorization denial codes emitted by the Agentic gateway.
     AGENT_ACCESS_DENIED = "agent_access_denied"
+    AGENT_LACKS_PERM = "agent_lacks_perm"
     AUTHORIZATION_DENIED = "authorization_denied"
     AUTHZ_ENGINE_ERROR = "authz_engine_error"
     CONTEXT_DENY = "context_deny"
     NO_STORE = "no_store"
     OBO_ACTION_NOT_ALLOWED = "obo_action_not_allowed"
+    OBO_AGENT_LACKS_PERM = "obo_agent_lacks_perm"
     OBO_DELEGATION_REQUIRED = "obo_delegation_required"
     OBO_NO_ACTS_FOR = "obo_no_acts_for"
     OBO_SCOPE_MISMATCH = "obo_scope_mismatch"
@@ -209,6 +260,52 @@ def _definition(
     )
 
 
+_ADMIN_CONTACT = "Please contact your administrator."
+# Registration outcomes use the owner-approved wording. The SDK renders the
+# reference, runtime-key thumbprint and notification e-mail around this text
+# (``deepintshield.agentic.errors.format_registration_message``); the gateway's
+# own prose and review links are never shown to the developer.
+_REGISTRATION_CONTACT = "Contact your administrator."
+
+
+def _admin_definition(
+    code: ErrorCode,
+    category: ErrorCategory,
+    description: str,
+    *,
+    retryable: bool = False,
+    dashboard_path: str = "",
+) -> ErrorDefinition:
+    """Build concise client guidance for issues resolved by an administrator."""
+    return _definition(
+        code,
+        category,
+        f"{description} {_ADMIN_CONTACT}",
+        retryable=retryable,
+        action=_ADMIN_CONTACT,
+        dashboard_path=dashboard_path,
+    )
+
+
+def _registration_definition(
+    code: ErrorCode,
+    category: ErrorCategory,
+    description: str,
+    *,
+    retryable: bool = False,
+    dashboard_path: str = "",
+) -> ErrorDefinition:
+    """Build the administrator-contact guidance used for registration states."""
+    return _definition(
+        code,
+        category,
+        f"{description} {_REGISTRATION_CONTACT}",
+        retryable=retryable,
+        action=_REGISTRATION_CONTACT,
+        dashboard_path=dashboard_path,
+    )
+
+
 _DEFINITIONS = (
     _definition(ErrorCode.SDK_ERROR, ErrorCategory.CLIENT, "The DeepIntShield SDK operation failed."),
     _definition(ErrorCode.CONFIGURATION_ERROR, ErrorCategory.CONFIGURATION, "The SDK configuration is invalid or incomplete."),
@@ -221,19 +318,19 @@ _DEFINITIONS = (
     _definition(ErrorCode.TRANSPORT_TIMEOUT, ErrorCategory.TRANSPORT, "The gateway request timed out.", retryable=True),
     _definition(ErrorCode.HTTP_ERROR, ErrorCategory.TRANSPORT, "The gateway rejected the request."),
     _definition(ErrorCode.INVALID_RESPONSE, ErrorCategory.TRANSPORT, "The gateway returned an invalid response.", retryable=True),
-    _definition(ErrorCode.AUTHENTICATION_FAILED, ErrorCategory.TRANSPORT, "Gateway authentication failed."),
-    _definition(ErrorCode.PERMISSION_DENIED, ErrorCategory.TRANSPORT, "The requested gateway operation is not permitted."),
+    _admin_definition(ErrorCode.AUTHENTICATION_FAILED, ErrorCategory.TRANSPORT, "Gateway authentication failed."),
+    _admin_definition(ErrorCode.PERMISSION_DENIED, ErrorCategory.TRANSPORT, "The requested gateway operation is not permitted."),
     _definition(ErrorCode.RESOURCE_NOT_FOUND, ErrorCategory.TRANSPORT, "The requested gateway resource was not found."),
     _definition(ErrorCode.CONFLICT, ErrorCategory.TRANSPORT, "The request conflicts with the current gateway state."),
     _definition(ErrorCode.RATE_LIMITED, ErrorCategory.TRANSPORT, "The gateway rate limit was exceeded.", retryable=True),
-    _definition(ErrorCode.QUOTA_EXCEEDED, ErrorCategory.TRANSPORT, "The workspace quota was exceeded."),
-    _definition(ErrorCode.FEATURE_LOCKED, ErrorCategory.CONFIGURATION, "This feature is not enabled for the workspace."),
+    _admin_definition(ErrorCode.QUOTA_EXCEEDED, ErrorCategory.TRANSPORT, "The workspace quota was exceeded."),
+    _admin_definition(ErrorCode.FEATURE_LOCKED, ErrorCategory.CONFIGURATION, "This feature is not enabled for the workspace."),
     _definition(ErrorCode.SERVER_ERROR, ErrorCategory.TRANSPORT, "The gateway failed to process the request.", retryable=True),
     _definition(ErrorCode.INTERNAL_ERROR, ErrorCategory.TRANSPORT, "The gateway encountered an internal error.", retryable=True),
     _definition(ErrorCode.CHAT_REQUEST_FAILED, ErrorCategory.CHAT, "The chat completion request failed."),
     _definition(ErrorCode.CHAT_STREAM_INVALID_EVENT, ErrorCategory.CHAT, "The chat stream returned a malformed event."),
     _definition(ErrorCode.GUARDRAIL_EVALUATION_FAILED, ErrorCategory.GUARDRAIL, "The guardrail evaluation failed."),
-    _definition(ErrorCode.GUARDRAIL_BLOCKED, ErrorCategory.GUARDRAIL, "A guardrail blocked the operation."),
+    _admin_definition(ErrorCode.GUARDRAIL_BLOCKED, ErrorCategory.GUARDRAIL, "A guardrail blocked the operation."),
     _definition(ErrorCode.RAG_EVALUATION_FAILED, ErrorCategory.RAG, "The RAG security evaluation failed."),
     _definition(ErrorCode.RAG_RETRIEVER_UNSUPPORTED, ErrorCategory.RAG, "The retriever exposes no supported retrieval method."),
     _definition(ErrorCode.RAG_EMBEDDER_UNSUPPORTED, ErrorCategory.RAG, "The embedder exposes no supported embedding method."),
@@ -245,56 +342,111 @@ _DEFINITIONS = (
     _definition(ErrorCode.MCP_DISCOVERY_FAILED, ErrorCategory.MCP, "MCP tool discovery failed."),
     _definition(ErrorCode.MCP_TOOL_NAME_INVALID, ErrorCategory.MCP, "The MCP tool name is not qualified with a server prefix."),
     _definition(ErrorCode.MCP_ARGUMENTS_INVALID, ErrorCategory.MCP, "The MCP tool arguments are not valid JSON."),
-    _definition(ErrorCode.MCP_TOOL_AUTHORIZATION_DENIED, ErrorCategory.MCP, "Canonical Agentic authorization denied the MCP tool execution.", action="Review the recorded decision and least-privilege access in Agentic.", dashboard_path=_ACTIVITY),
-    _definition(ErrorCode.MCP_TOOL_AUTHORIZATION_UNAVAILABLE, ErrorCategory.MCP, "Canonical Agentic authorization for the MCP tool is unavailable.", retryable=True, action="Restore the authorization service before retrying; execution remains blocked.", dashboard_path=_OVERVIEW),
-    _definition(ErrorCode.MCP_TOOL_APPROVAL_REQUIRED, ErrorCategory.MCP, "The MCP tool execution is waiting for approval.", action="Approve or deny the pending MCP action in Agentic.", dashboard_path=_APPROVALS),
+    _admin_definition(ErrorCode.MCP_TOOL_AUTHORIZATION_DENIED, ErrorCategory.MCP, "Access to this MCP tool is denied.", dashboard_path=_ACTIVITY),
+    _admin_definition(ErrorCode.MCP_TOOL_AUTHORIZATION_UNAVAILABLE, ErrorCategory.MCP, "MCP tool authorization is unavailable.", retryable=True, dashboard_path=_OVERVIEW),
+    _admin_definition(ErrorCode.MCP_TOOL_APPROVAL_REQUIRED, ErrorCategory.MCP, "The MCP tool execution is waiting for approval.", dashboard_path=_APPROVALS),
     _definition(ErrorCode.PROVIDER_DEPENDENCY_MISSING, ErrorCategory.PROVIDER, "The selected provider dependency is not installed."),
     _definition(ErrorCode.PROVIDER_INITIALIZATION_FAILED, ErrorCategory.PROVIDER, "The selected provider could not be initialized."),
     _definition(ErrorCode.FRAMEWORK_BINDER_NOT_FOUND, ErrorCategory.FRAMEWORK, "The requested framework binder is not supported."),
     _definition(ErrorCode.FRAMEWORK_BINDER_ATTRIBUTE_MISSING, ErrorCategory.FRAMEWORK, "The framework does not provide the requested binder operation."),
-    _definition(ErrorCode.AGENTIC_ERROR, ErrorCategory.AGENTIC, "The governed operation stopped safely.", action="Review the recorded Agentic decision before retrying.", dashboard_path=_ACTIVITY),
-    _definition(ErrorCode.GOVERNANCE_CONFIGURATION_ERROR, ErrorCategory.AGENTIC, "Agent governance is not fully configured.", action="Complete the Agentic configuration and retry.", dashboard_path=_REGISTRATIONS),
-    _definition(ErrorCode.GUARDRAIL_DENIED, ErrorCategory.AGENTIC, "Agentic authorization denied this operation.", action="Review the decision and least-privilege access in Agentic.", dashboard_path=_ACTIVITY),
-    _definition(ErrorCode.REQUIRE_APPROVAL, ErrorCategory.AGENTIC, "This operation is waiting for approval.", action="Approve or deny the pending action in Agentic.", dashboard_path=_APPROVALS),
-    _definition(ErrorCode.MASK_OBLIGATION_UNSUPPORTED, ErrorCategory.AGENTIC, "A required data-protection obligation could not be applied safely.", action="Review the decision obligations before retrying.", dashboard_path=_ACTIVITY),
-    _definition(ErrorCode.GATEWAY_UNAVAILABLE, ErrorCategory.AGENTIC, "The Agentic gateway is unavailable.", retryable=True, action="Restore gateway connectivity and retry.", dashboard_path=_OVERVIEW),
-    _definition(ErrorCode.INVALID_GATEWAY_RESPONSE, ErrorCategory.AGENTIC, "The Agentic gateway returned an invalid response.", retryable=True, action="Check gateway health and retry; the operation was blocked safely.", dashboard_path=_OVERVIEW),
-    _definition(ErrorCode.AGENT_REGISTRATION_PENDING, ErrorCategory.AGENTIC, "This agent is waiting for registration approval.", action="Review and approve the captured agent registration in Agentic.", dashboard_path=_REGISTRATIONS),
-    _definition(ErrorCode.AGENT_NOT_REGISTERED, ErrorCategory.AGENTIC, "This agent is not registered.", action="Run discovery, then review and approve the captured registration.", dashboard_path=_REGISTRATIONS),
-    _definition(ErrorCode.AGENT_REGISTRATION_DENIED, ErrorCategory.AGENTIC, "This agent's registration was denied.", action="Review the registration decision before submitting corrected evidence.", dashboard_path=_REGISTRATIONS),
-    _definition(ErrorCode.AGENT_REGISTRATION_NOT_READY, ErrorCategory.AGENTIC, "This agent's registration review is incomplete.", action="Complete the verified identity, code, and access review.", dashboard_path=_REGISTRATIONS),
-    _definition(ErrorCode.AGENT_REGISTRATION_APPROVAL_REQUIRED, ErrorCategory.AGENTIC, "This agent requires registration approval.", action="Review and approve the captured registration in Agentic.", dashboard_path=_REGISTRATIONS),
-    _definition(ErrorCode.AGENT_REGISTRATION_QUOTA_EXCEEDED, ErrorCategory.AGENTIC, "This reporting key has reached its pending-registration limit.", action="Approve or deny pending registrations, then rerun discovery.", dashboard_path=_OVERVIEW),
+    _admin_definition(ErrorCode.AGENTIC_ERROR, ErrorCategory.AGENTIC, "The governed operation stopped safely.", dashboard_path=_ACTIVITY),
+    _admin_definition(ErrorCode.GOVERNANCE_CONFIGURATION_ERROR, ErrorCategory.AGENTIC, "Agent governance is not fully configured.", dashboard_path=_REGISTRATIONS),
+    _admin_definition(ErrorCode.GUARDRAIL_DENIED, ErrorCategory.AGENTIC, "Access to this operation is denied.", dashboard_path=_ACTIVITY),
+    _admin_definition(ErrorCode.REQUIRE_APPROVAL, ErrorCategory.AGENTIC, "This operation is waiting for approval.", dashboard_path=_APPROVALS),
+    _admin_definition(ErrorCode.MASK_OBLIGATION_UNSUPPORTED, ErrorCategory.AGENTIC, "A required data-protection obligation could not be applied safely.", dashboard_path=_ACTIVITY),
+    _admin_definition(ErrorCode.GATEWAY_UNAVAILABLE, ErrorCategory.AGENTIC, "The Agentic gateway is unavailable.", retryable=True, dashboard_path=_OVERVIEW),
+    _admin_definition(ErrorCode.INVALID_GATEWAY_RESPONSE, ErrorCategory.AGENTIC, "The Agentic gateway returned an invalid response.", retryable=True, dashboard_path=_OVERVIEW),
+    _registration_definition(ErrorCode.AGENT_REGISTRATION_PENDING, ErrorCategory.AGENTIC, "Registration pending.", dashboard_path=_REGISTRATIONS),
+    # The one refusal over a registering e-mail: the pending registration was
+    # first filed under a different address. The gateway maps an address to an
+    # identity in the workspace directory and notifies it; the address is not
+    # verified and grants nothing.
+    _registration_definition(ErrorCode.REGISTRATION_REQUESTER_MISMATCH, ErrorCategory.AGENTIC, "Registration refused: this agent is already being registered under a different email.", dashboard_path=_REGISTRATIONS),
+    _admin_definition(ErrorCode.AGENT_NOT_REGISTERED, ErrorCategory.AGENTIC, "Agent needs registration.", dashboard_path=_REGISTRATIONS),
+    _admin_definition(ErrorCode.AGENT_REGISTRATION_DENIED, ErrorCategory.AGENTIC, "This agent's registration was denied.", dashboard_path=_REGISTRATIONS),
+    _admin_definition(ErrorCode.AGENT_REGISTRATION_NOT_READY, ErrorCategory.AGENTIC, "This agent's registration review is incomplete.", dashboard_path=_REGISTRATIONS),
+    _admin_definition(ErrorCode.AGENT_REGISTRATION_APPROVAL_REQUIRED, ErrorCategory.AGENTIC, "This agent requires registration approval.", dashboard_path=_REGISTRATIONS),
+    _admin_definition(ErrorCode.AGENT_REGISTRATION_QUOTA_EXCEEDED, ErrorCategory.AGENTIC, "The agent registration limit has been reached.", dashboard_path=_OVERVIEW),
     _definition(ErrorCode.AGENT_NAME_REQUIRED, ErrorCategory.AGENTIC, "This workload has no agent name, so it has no identity to govern.", action="Pass agent_name=\"…\" to DeepintShield(…) (or set DEEPINTSHIELD_AGENT_NAME) and rerun.", dashboard_path=_OVERVIEW),
-    _definition(ErrorCode.AGENT_NAME_CONFLICT, ErrorCategory.AGENTIC, "An agent with this name already exists in the workspace and is not associated with this key.", action="Choose a different agent_name (or DEEPINTSHIELD_AGENT_NAME), or associate this key with the existing agent in the Registry.", dashboard_path=_REGISTRATIONS),
-    _definition(ErrorCode.AGENT_QUARANTINED, ErrorCategory.AGENTIC, "This agent is quarantined: its code changed and the new blueprint is unapproved.", action="Review the agent's blueprint scan to restore it.", dashboard_path=_BLUEPRINTS),
-    _definition(ErrorCode.AGENT_REGISTRATION_REVIEW_STALE, ErrorCategory.AGENTIC, "The agent registration changed during review.", action="Reload the latest registration evidence before deciding.", dashboard_path=_REGISTRATIONS),
-    _definition(ErrorCode.AGENT_REGISTRATION_REVIEW_CONFLICT, ErrorCategory.AGENTIC, "The agent registration changed during review.", action="Reload the latest registration evidence before deciding.", dashboard_path=_REGISTRATIONS),
-    _definition(ErrorCode.AGENT_APPROVAL_PENDING, ErrorCategory.AGENTIC, "This operation is waiting for approval.", action="Approve or deny the pending action in Agentic.", dashboard_path=_APPROVALS),
-    _definition(ErrorCode.GUARDRAIL_APPROVAL_PENDING, ErrorCategory.AGENTIC, "This operation is waiting for approval.", action="Approve or deny the pending action in Agentic.", dashboard_path=_APPROVALS),
-    _definition(ErrorCode.APPROVAL_REQUIRED, ErrorCategory.AGENTIC, "This operation is waiting for approval.", action="Approve or deny the pending action in Agentic.", dashboard_path=_APPROVALS),
-    _definition(ErrorCode.APPROVAL_ACCESS_DENIED, ErrorCategory.AGENTIC, "You are not allowed to review this approval.", action="Ask a workspace administrator to grant approval-review access.", dashboard_path=_APPROVALS),
-    _definition(ErrorCode.APPROVAL_STORE_UNAVAILABLE, ErrorCategory.AGENTIC, "The durable approval service is unavailable.", retryable=True, action="Restore the approval service and retry; the operation remains blocked.", dashboard_path=_APPROVALS),
-    _definition(ErrorCode.AUTHZ_STORE_UNAVAILABLE, ErrorCategory.AGENTIC, "The authorization service is unavailable.", retryable=True, action="Restore the authorization service and retry; the operation remains blocked.", dashboard_path=_OVERVIEW),
-    _definition(ErrorCode.LEGACY_PDP_UNAVAILABLE, ErrorCategory.AGENTIC, "The configured policy decision service is unavailable.", retryable=True, action="Restore the policy decision service and retry.", dashboard_path=_OVERVIEW),
-    _definition(ErrorCode.AGENT_BLUEPRINT_REVIEW_PENDING, ErrorCategory.AGENTIC, "This code blueprint is waiting for security review.", action="Review the exact code digest in Agentic.", dashboard_path=_BLUEPRINTS),
-    _definition(ErrorCode.AGENT_BLUEPRINT_REVIEW_DENIED, ErrorCategory.AGENTIC, "This code blueprint was denied.", action="Review the findings and submit a corrected code digest.", dashboard_path=_BLUEPRINTS),
-    _definition(ErrorCode.BLUEPRINT_SCAN_UNAVAILABLE, ErrorCategory.AGENTIC, "The code blueprint could not be scanned safely.", retryable=True, action="Restore the scanner and rerun source-bearing discovery.", dashboard_path=_BLUEPRINTS),
-    _definition(ErrorCode.BLUEPRINT_SCAN_REQUIRED, ErrorCategory.AGENTIC, "An approved code blueprint is required.", action="Publish and review a complete source-bearing blueprint.", dashboard_path=_BLUEPRINTS),
-    _definition(ErrorCode.BLUEPRINT_SCANNING_REQUIRED, ErrorCategory.AGENTIC, "Static code-blueprint scanning must remain enabled.", action="Keep static scanning enabled and review the blueprint policy.", dashboard_path=_BLUEPRINTS),
-    _definition(ErrorCode.BLUEPRINT_REGISTRATION_FAILED, ErrorCategory.AGENTIC, "The code blueprint could not be registered safely.", retryable=True, action="Restore the registration service and rerun source-bearing discovery.", dashboard_path=_BLUEPRINTS),
-    _definition(ErrorCode.BLUEPRINT_COVERAGE_INCOMPLETE, ErrorCategory.AGENTIC, "The executable code evidence is incomplete.", action="Correct blueprint capture and rerun discovery.", dashboard_path=_BLUEPRINTS),
-    _definition(ErrorCode.BLUEPRINT_MANIFEST_TOO_LARGE, ErrorCategory.AGENTIC, "The executable code blueprint exceeds the safe size limit.", action="Reduce the captured executable bundle and rerun discovery.", dashboard_path=_BLUEPRINTS),
-    _definition(ErrorCode.BLUEPRINT_REMOTE_TOOL_UNVERIFIED, ErrorCategory.AGENTIC, "A remote tool could not be verified against an MCP connection.", action="Verify the tool inventory in MCP Connections and rerun discovery.", dashboard_path=_MCP),
-    _definition(ErrorCode.BLUEPRINT_MCP_INVENTORY_UNAVAILABLE, ErrorCategory.AGENTIC, "The MCP tool inventory is unavailable.", retryable=True, action="Restore the MCP connection and rerun discovery.", dashboard_path=_MCP),
-    _definition(ErrorCode.BLUEPRINT_MODEL_SCAN_PENDING, ErrorCategory.AGENTIC, "Code model analysis is still running.", retryable=True, action="Wait for the scan or review its status in Agentic.", dashboard_path=_BLUEPRINTS),
-    _definition(ErrorCode.BLUEPRINT_MODEL_SCAN_FAILED, ErrorCategory.AGENTIC, "Code model analysis failed safely.", retryable=True, action="Verify scanner settings and rerun source-bearing discovery.", dashboard_path=_BLUEPRINTS),
-    _definition(ErrorCode.BLUEPRINT_MODEL_UNAVAILABLE, ErrorCategory.AGENTIC, "The configured code-analysis model is unavailable.", retryable=True, action="Restore the model route and rerun source-bearing discovery.", dashboard_path=_BLUEPRINTS),
-    _definition(ErrorCode.INVALID_BLUEPRINT_MANIFEST, ErrorCategory.AGENTIC, "The code blueprint evidence is invalid.", action="Correct the source evidence and rerun discovery.", dashboard_path=_BLUEPRINTS),
-    _definition(ErrorCode.CREDENTIAL_CONFIGURATION_ERROR, ErrorCategory.AGENTIC, "The workload identity is not fully configured.", action="Complete the agent identity configuration and retry.", dashboard_path=_IDENTITIES),
-    _definition(ErrorCode.CREDENTIAL_PROVIDER_UNSUPPORTED, ErrorCategory.AGENTIC, "The workload identity provider is unsupported.", action="Select and validate a supported identity provider.", dashboard_path=_IDENTITIES),
+    _admin_definition(ErrorCode.AGENT_NAME_CONFLICT, ErrorCategory.AGENTIC, "This agent name is already associated with another credential.", dashboard_path=_REGISTRATIONS),
+    _admin_definition(ErrorCode.AGENT_QUARANTINED, ErrorCategory.AGENTIC, "This agent is quarantined pending code approval.", dashboard_path=_BLUEPRINTS),
+    _admin_definition(ErrorCode.AGENT_REGISTRATION_REVIEW_STALE, ErrorCategory.AGENTIC, "The agent registration changed during review.", dashboard_path=_REGISTRATIONS),
+    _admin_definition(ErrorCode.AGENT_REGISTRATION_REVIEW_CONFLICT, ErrorCategory.AGENTIC, "The agent registration changed during review.", dashboard_path=_REGISTRATIONS),
+    _admin_definition(ErrorCode.AGENT_APPROVAL_PENDING, ErrorCategory.AGENTIC, "This operation is waiting for approval.", dashboard_path=_APPROVALS),
+    _admin_definition(ErrorCode.GUARDRAIL_APPROVAL_PENDING, ErrorCategory.AGENTIC, "This operation is waiting for approval.", dashboard_path=_APPROVALS),
+    _admin_definition(ErrorCode.APPROVAL_REQUIRED, ErrorCategory.AGENTIC, "This operation is waiting for approval.", dashboard_path=_APPROVALS),
+    _admin_definition(ErrorCode.APPROVAL_ACCESS_DENIED, ErrorCategory.AGENTIC, "You are not allowed to review this approval.", dashboard_path=_APPROVALS),
+    _admin_definition(ErrorCode.APPROVAL_STORE_UNAVAILABLE, ErrorCategory.AGENTIC, "The durable approval service is unavailable.", retryable=True, dashboard_path=_APPROVALS),
+    _admin_definition(ErrorCode.AUTHZ_STORE_UNAVAILABLE, ErrorCategory.AGENTIC, "The authorization service is unavailable.", retryable=True, dashboard_path=_OVERVIEW),
+    _admin_definition(ErrorCode.LEGACY_PDP_UNAVAILABLE, ErrorCategory.AGENTIC, "The configured policy decision service is unavailable.", retryable=True, dashboard_path=_OVERVIEW),
+    _admin_definition(ErrorCode.AGENT_BLUEPRINT_REVIEW_PENDING, ErrorCategory.AGENTIC, "This code blueprint is waiting for security review.", dashboard_path=_BLUEPRINTS),
+    _admin_definition(ErrorCode.AGENT_BLUEPRINT_REVIEW_DENIED, ErrorCategory.AGENTIC, "This code blueprint was denied.", dashboard_path=_BLUEPRINTS),
+    _admin_definition(ErrorCode.BLUEPRINT_SCAN_UNAVAILABLE, ErrorCategory.AGENTIC, "The code blueprint could not be scanned safely.", retryable=True, dashboard_path=_BLUEPRINTS),
+    _admin_definition(ErrorCode.BLUEPRINT_SCAN_REQUIRED, ErrorCategory.AGENTIC, "An approved code blueprint is required.", dashboard_path=_BLUEPRINTS),
+    _admin_definition(ErrorCode.BLUEPRINT_SCANNING_REQUIRED, ErrorCategory.AGENTIC, "Static code-blueprint scanning must remain enabled.", dashboard_path=_BLUEPRINTS),
+    _admin_definition(ErrorCode.BLUEPRINT_REGISTRATION_FAILED, ErrorCategory.AGENTIC, "The code blueprint could not be registered safely.", retryable=True, dashboard_path=_BLUEPRINTS),
+    _admin_definition(ErrorCode.BLUEPRINT_COVERAGE_INCOMPLETE, ErrorCategory.AGENTIC, "Agent code verification is incomplete.", dashboard_path=_BLUEPRINTS),
+    _admin_definition(ErrorCode.BLUEPRINT_MANIFEST_TOO_LARGE, ErrorCategory.AGENTIC, "The executable code blueprint exceeds the safe size limit.", dashboard_path=_BLUEPRINTS),
+    _admin_definition(ErrorCode.BLUEPRINT_REMOTE_TOOL_UNVERIFIED, ErrorCategory.AGENTIC, "A remote tool could not be verified against an MCP connection.", dashboard_path=_MCP),
+    _admin_definition(ErrorCode.BLUEPRINT_MCP_INVENTORY_UNAVAILABLE, ErrorCategory.AGENTIC, "The MCP tool inventory is unavailable.", retryable=True, dashboard_path=_MCP),
+    _admin_definition(ErrorCode.BLUEPRINT_MODEL_SCAN_PENDING, ErrorCategory.AGENTIC, "Code model analysis is still running.", retryable=True, dashboard_path=_BLUEPRINTS),
+    _admin_definition(ErrorCode.BLUEPRINT_MODEL_SCAN_FAILED, ErrorCategory.AGENTIC, "Code model analysis failed safely.", retryable=True, dashboard_path=_BLUEPRINTS),
+    _admin_definition(ErrorCode.BLUEPRINT_MODEL_UNAVAILABLE, ErrorCategory.AGENTIC, "The configured code-analysis model is unavailable.", retryable=True, dashboard_path=_BLUEPRINTS),
+    _admin_definition(ErrorCode.INVALID_BLUEPRINT_MANIFEST, ErrorCategory.AGENTIC, "The code blueprint evidence is invalid.", dashboard_path=_BLUEPRINTS),
+    _admin_definition(ErrorCode.CREDENTIAL_CONFIGURATION_ERROR, ErrorCategory.AGENTIC, "The workload identity is not fully configured.", dashboard_path=_IDENTITIES),
+    _admin_definition(ErrorCode.CREDENTIAL_PROVIDER_UNSUPPORTED, ErrorCategory.AGENTIC, "The workload identity provider is unsupported.", dashboard_path=_IDENTITIES),
     _definition(ErrorCode.CREDENTIAL_DEPENDENCY_MISSING, ErrorCategory.AGENTIC, "A workload identity dependency is missing.", action="Install the configured provider dependency and retry.", dashboard_path=_IDENTITIES),
-    _definition(ErrorCode.CREDENTIAL_EXCHANGE_FAILED, ErrorCategory.AGENTIC, "The workload identity exchange failed.", retryable=True, action="Verify the selected identity provider and retry.", dashboard_path=_IDENTITIES),
+    _admin_definition(ErrorCode.CREDENTIAL_EXCHANGE_FAILED, ErrorCategory.AGENTIC, "The workload identity exchange failed.", retryable=True, dashboard_path=_IDENTITIES),
+    _definition(ErrorCode.CREDENTIAL_HOST_IDENTITY_MISSING, ErrorCategory.AGENTIC, "No Azure host identity is available to this process.", action="Run on an Azure host with a managed or workload identity, set the AZURE_CLIENT_ID/AZURE_TENANT_ID credential variables, or use gateway runtime authentication.", dashboard_path=_IDENTITIES),
+    _admin_definition(ErrorCode.CREDENTIAL_DPOP_CONFIGURATION_ERROR, ErrorCategory.AGENTIC, "The issuer could not supply the required bound workload token.", dashboard_path=_IDENTITIES),
+    _admin_definition(ErrorCode.CREDENTIAL_DPOP_PROVIDER_UNSUPPORTED, ErrorCategory.AGENTIC, "This credential adapter does not support DPoP token issuance.", dashboard_path=_IDENTITIES),
+    _admin_definition(ErrorCode.CREDENTIAL_DPOP_NONCE_FAILED, ErrorCategory.AGENTIC, "The issuer's DPoP nonce challenge could not be satisfied.", retryable=True, dashboard_path=_IDENTITIES),
+    _definition(ErrorCode.AGENT_RUNTIME_CONFIGURATION_ERROR, ErrorCategory.AGENTIC, "Gateway runtime authentication is not configured consistently.", action="Check the agent's runtime binding and explicitly select the matching cloud runtime kind in this deployment.", dashboard_path=_IDENTITIES),
+    _definition(ErrorCode.AGENT_RUNTIME_KEY_UNAVAILABLE, ErrorCategory.AGENTIC, "The approved runtime signing key could not be loaded safely.", action="Restore the existing key or unlock its OS keyring. For a replacement, enroll and approve a new runtime key in Agentic identities.", dashboard_path=_IDENTITIES),
+    _registration_definition(ErrorCode.AGENT_RUNTIME_ENROLLMENT_PENDING, ErrorCategory.AGENTIC, "Registration pending.", dashboard_path=_IDENTITIES),
+    _registration_definition(ErrorCode.RUNTIME_BINDING_IDENTITY_MISSING, ErrorCategory.AGENTIC, "The runtime key is bound to an agent whose identity has not been declared.", dashboard_path=_IDENTITIES),
+    _admin_definition(ErrorCode.MANAGED_EXECUTION_UNAVAILABLE, ErrorCategory.AGENTIC, "Server execution is unavailable.", retryable=True, dashboard_path=_REGISTRATIONS),
+    _definition(ErrorCode.MANAGED_EXECUTION_BUNDLE_UNSUPPORTED, ErrorCategory.AGENTIC, "This script cannot be packaged for server execution.", action="Use a standalone UTF-8 Python entrypoint with explicit local imports and no symlinks or computed code loaders; use an operator-built worker for other dependencies.", dashboard_path=_REGISTRATIONS),
+    _definition(ErrorCode.MANAGED_EXECUTION_BUNDLE_TOO_LARGE, ErrorCategory.AGENTIC, "The server execution bundle exceeds its limit.", action="Reduce the imported Python files or use an operator-built worker.", dashboard_path=_REGISTRATIONS),
+    _definition(ErrorCode.MANAGED_EXECUTION_DEPENDENCY_MISSING, ErrorCategory.AGENTIC, "A script dependency cannot be pinned.", action="Install the imported package locally so it can be pinned as evidence, and make sure the package is installed in the approved worker image; its version there does not need to match.", dashboard_path=_REGISTRATIONS),
+    _admin_definition(ErrorCode.MANAGED_DEPENDENCY_UNAVAILABLE, ErrorCategory.AGENTIC, "A required package is not installed in the server runtime.", dashboard_path=_REGISTRATIONS),
+    _admin_definition(ErrorCode.MANAGED_PYTHON_VERSION_UNAVAILABLE, ErrorCategory.AGENTIC, "The required Python version is unavailable in the server runtime.", dashboard_path=_REGISTRATIONS),
+    _admin_definition(ErrorCode.MANAGED_EXECUTION_RESPONSE_INVALID, ErrorCategory.AGENTIC, "The server execution response is invalid.", dashboard_path=_REGISTRATIONS),
+    _admin_definition(ErrorCode.MANAGED_EXECUTION_OUTPUT_UNAVAILABLE, ErrorCategory.AGENTIC, "The saved execution output is unavailable.", dashboard_path=_REGISTRATIONS),
+    _admin_definition(ErrorCode.MANAGED_EXECUTION_SUBMISSION_FAILED, ErrorCategory.AGENTIC, "The script could not be submitted for server execution.", retryable=True, dashboard_path=_REGISTRATIONS),
+    _admin_definition(ErrorCode.MANAGED_EXECUTION_CONFIGURATION_INVALID, ErrorCategory.AGENTIC, "The server worker configuration is incomplete.", dashboard_path=_REGISTRATIONS),
+    _definition(ErrorCode.MANAGED_EXECUTION_CONTEXT_UNSUPPORTED, ErrorCategory.AGENTIC, "Server execution cannot transfer this requester or delegation context.", action="Run this delegated workflow locally; managed execution currently supports autonomous agents only.", dashboard_path=_REGISTRATIONS),
+    _definition(ErrorCode.MANAGED_SUBMISSION_CHANGED, ErrorCategory.AGENTIC, "The submitted code or Python environment differs from the saved server run. Open the existing agent review to continue setup.", action="Continue the saved run in Agentic review. Changed source, dependency versions, or Python versions require a new reviewed submission.", dashboard_path=_REGISTRATIONS),
+    _definition(ErrorCode.MANAGED_JOB_CHANGED, ErrorCategory.AGENTIC, "The server run changed or conflicts with this submission. Refresh the existing agent review before continuing.", action="Check the saved server run in Agentic review.", dashboard_path=_REGISTRATIONS),
+    _admin_definition(ErrorCode.MANAGED_BLUEPRINT_CHANGED, ErrorCategory.AGENTIC, "The saved server code differs from the current agent review.", dashboard_path=_REGISTRATIONS),
+    _admin_definition(ErrorCode.MANAGED_EXECUTION_PENDING, ErrorCategory.AGENTIC, "Server execution is pending. Your submission is saved.", dashboard_path=_REGISTRATIONS),
+    _admin_definition(ErrorCode.MANAGED_EXECUTION_IDENTITY_PENDING, ErrorCategory.AGENTIC, "Server identity verification is pending. Your submission is saved.", dashboard_path=_REGISTRATIONS),
+    _admin_definition(ErrorCode.MANAGED_EXECUTION_RUNTIME_PENDING, ErrorCategory.AGENTIC, "Server runtime authorization is pending. Your submission is saved.", dashboard_path=_REGISTRATIONS),
+    _admin_definition(ErrorCode.MANAGED_EXECUTION_ACCESS_PENDING, ErrorCategory.AGENTIC, "Agent access setup is pending. Your submission is saved.", dashboard_path=_REGISTRATIONS),
+    _admin_definition(ErrorCode.MANAGED_EXECUTION_FAILED, ErrorCategory.AGENTIC, "Server execution failed.", dashboard_path=_REGISTRATIONS),
+    # A workspace listed for server runs has no local fall-back: an identity that cannot use
+    # gateway runtime exchange (VK-trusted, or a provider without it) can never finish a server run there.
+    _admin_definition(ErrorCode.MANAGED_GATEWAY_RUNTIME_REQUIRED, ErrorCategory.AGENTIC, "Server runs in this workspace need an agent identity that uses gateway exchange.", dashboard_path=_REGISTRATIONS),
+    _admin_definition(ErrorCode.MANAGED_EXECUTION_CANCELLED, ErrorCategory.AGENTIC, "Server execution was cancelled.", dashboard_path=_REGISTRATIONS),
+    _admin_definition(ErrorCode.MANAGED_EXECUTION_EXPIRED, ErrorCategory.AGENTIC, "The saved server run expired.", dashboard_path=_REGISTRATIONS),
+    _admin_definition(ErrorCode.MANAGED_EXECUTION_RECONCILE_REQUIRED, ErrorCategory.AGENTIC, "The server run needs reconciliation before it can proceed.", dashboard_path=_REGISTRATIONS),
+    _definition(ErrorCode.AGENT_RETIRED, ErrorCategory.AGENTIC, "This agent has been permanently retired.", action="Use an active agent identity. Retirement preserves the review history and cannot be reversed.", dashboard_path=_REGISTRATIONS),
+    _admin_definition(ErrorCode.AGENT_RUNTIME_BINDING_DISABLED, ErrorCategory.AGENTIC, "This runtime binding is not enabled.", dashboard_path=_IDENTITIES),
+    _admin_definition(ErrorCode.AGENT_TOOL_SCOPE_MISMATCH, ErrorCategory.AGENTIC, "This tool belongs to a different agent.", dashboard_path=_REGISTRATIONS),
+    _admin_definition(ErrorCode.AGENT_TOOL_IDENTITY_REVIEW_REQUIRED, ErrorCategory.AGENTIC, "Agent tool isolation requires review.", dashboard_path=_REGISTRATIONS),
+    _admin_definition(ErrorCode.AGENT_RUNTIME_EXCHANGE_FAILED, ErrorCategory.AGENTIC, "The gateway runtime session could not be obtained.", retryable=True, dashboard_path=_IDENTITIES),
+    _admin_definition(ErrorCode.AGENT_RUNTIME_RESPONSE_INVALID, ErrorCategory.AGENTIC, "The gateway returned an invalid or differently bound runtime session.", dashboard_path=_IDENTITIES),
+    _definition(ErrorCode.AGENT_RUNTIME_ASSERTION_INVALID, ErrorCategory.AGENTIC, "The selected cloud runtime did not provide the required identity assertion.", action="Check this deployment's managed identity, audience and native runtime configuration.", dashboard_path=_IDENTITIES),
+    _definition(ErrorCode.AGENT_RUNTIME_REQUEST_PROOF_REQUIRED, ErrorCategory.AGENTIC, "A runtime session requires a fresh proof for each request.", action="Use the SDK's Agentic or native MCP request integration; a static identity header dictionary cannot represent a bound runtime session.", dashboard_path=_IDENTITIES),
+    _admin_definition(ErrorCode.AGENT_RUNTIME_UNAVAILABLE, ErrorCategory.AGENTIC, "Gateway runtime authentication is unavailable.", retryable=True, dashboard_path=_IDENTITIES),
+    _admin_definition(ErrorCode.AGENT_RUNTIME_AUTHENTICATION_FAILED, ErrorCategory.AGENTIC, "The runtime key or cloud identity does not match its approved binding.", dashboard_path=_IDENTITIES),
+    _admin_definition(ErrorCode.AGENT_RUNTIME_INVALID, ErrorCategory.AGENTIC, "The runtime authentication request or binding is invalid.", dashboard_path=_IDENTITIES),
+    _admin_definition(ErrorCode.AGENT_RUNTIME_CONFLICT, ErrorCategory.AGENTIC, "The runtime authentication configuration changed.", retryable=True, dashboard_path=_IDENTITIES),
+    _definition(ErrorCode.AGENT_RUNTIME_CAPACITY_EXCEEDED, ErrorCategory.AGENTIC, "Runtime authentication capacity is temporarily exhausted.", retryable=True, action="Wait briefly and retry. If this deployment scales beyond its approved runtime capacity, ask an administrator to review its limits.", dashboard_path=_IDENTITIES),
+    _definition(ErrorCode.AGENT_TASK_CONTEXT_INVALID, ErrorCategory.AGENTIC, "The task mandate or its input references are invalid.", action="Use the signed mandate and bounded receipt or memory references for this task."),
+    _admin_definition(ErrorCode.AGENT_TASK_SECURITY_UNAVAILABLE, ErrorCategory.AGENTIC, "The gateway cannot enforce the requested task mandate."),
+    _definition(ErrorCode.AGENT_TASK_RECEIPT_REQUIRED, ErrorCategory.AGENTIC, "A task writer authorization receipt is required.", action="Authorize the permitted memory writer and commit using its task and receipt IDs."),
+    _definition(ErrorCode.AGENT_WORKLOAD_DESTINATION_INVALID, ErrorCategory.AGENTIC, "The MCP request changed the configured workload authentication destination.", action="Use the configured gateway MCP endpoint and do not forward its credentials to another destination."),
     _definition(ErrorCode.FRAMEWORK_DEPENDENCY_MISSING, ErrorCategory.FRAMEWORK, "The selected agent framework dependency is missing.", action="Install the framework integration dependency and retry.", dashboard_path=_OVERVIEW),
     _definition(ErrorCode.FRAMEWORK_INTEGRATION_UNSUPPORTED, ErrorCategory.FRAMEWORK, "The installed agent framework version is not supported.", action="Install a supported framework version and retry.", dashboard_path=_OVERVIEW),
     _definition(ErrorCode.AGENT_DECISION_CONTEXT_MISSING, ErrorCategory.AGENTIC, "The Agentic decision context is incomplete.", action="Provide the required tool or decision context and retry.", dashboard_path=_REGISTRATIONS),
@@ -302,10 +454,12 @@ _DEFINITIONS = (
     _definition(ErrorCode.REGISTRY_DISCOVERY_EMPTY, ErrorCategory.AGENTIC, "No discoverable agent topology was provided.", action="Provide an agent, workflow, or explicit manifest and retry.", dashboard_path=_REGISTRATIONS),
     _definition(ErrorCode.REGISTRY_DISCOVERY_INVALID, ErrorCategory.AGENTIC, "The agent discovery payload is invalid.", action="Correct the discovery input and retry.", dashboard_path=_REGISTRATIONS),
     _definition(ErrorCode.REGISTRY_DISCOVERY_PENDING, ErrorCategory.AGENTIC, "Agent discovery is already in progress.", retryable=True, action="Wait for discovery to complete and retry.", dashboard_path=_REGISTRATIONS),
-    _definition(ErrorCode.REGISTRY_DISCOVERY_REJECTED, ErrorCategory.AGENTIC, "The agent registry rejected the discovery report.", action="Review the registry response and correct the discovery evidence.", dashboard_path=_REGISTRATIONS),
-    _definition(ErrorCode.REGISTRY_DISCOVERY_UNAVAILABLE, ErrorCategory.AGENTIC, "The agent discovery service is unavailable.", retryable=True, action="Restore the discovery service and retry.", dashboard_path=_REGISTRATIONS),
-    _definition(ErrorCode.REGISTRY_UNAVAILABLE, ErrorCategory.AGENTIC, "The agent registry is unavailable.", retryable=True, action="Restore the registry service and retry.", dashboard_path=_REGISTRATIONS),
-    _definition(ErrorCode.WORKLOAD_PROOF_REQUIRED, ErrorCategory.AGENTIC, "Verified workload identity proof is required.", action="Configure workload identity proof and retry.", dashboard_path=_IDENTITIES),
+    _admin_definition(ErrorCode.REGISTRY_DISCOVERY_REJECTED, ErrorCategory.AGENTIC, "The agent registry rejected the discovery report.", dashboard_path=_REGISTRATIONS),
+    _admin_definition(ErrorCode.REGISTRY_DISCOVERY_UNAVAILABLE, ErrorCategory.AGENTIC, "The agent discovery service is unavailable.", retryable=True, dashboard_path=_REGISTRATIONS),
+    _admin_definition(ErrorCode.REGISTRY_UNAVAILABLE, ErrorCategory.AGENTIC, "The agent registry is unavailable.", retryable=True, dashboard_path=_REGISTRATIONS),
+    _admin_definition(ErrorCode.WORKLOAD_PROOF_REQUIRED, ErrorCategory.AGENTIC, "Agent identity verification is required.", dashboard_path=_IDENTITIES),
+    _admin_definition(ErrorCode.AGENT_LACKS_PERM, ErrorCategory.AGENTIC, "The agent lacks permission for this operation.", dashboard_path="/workspace/agentic-new/authorization?tab=access"),
+    _admin_definition(ErrorCode.OBO_AGENT_LACKS_PERM, ErrorCategory.AGENTIC, "The delegated agent lacks permission for this operation.", dashboard_path="/workspace/agentic-new/authorization?tab=access"),
 )
 
 
@@ -336,6 +490,16 @@ _DEFINITIONS += tuple(
         dashboard_path=_DENIAL_DEFINITION.dashboard_path,
     )
     for code in _DENIAL_CODE_VALUES
+)
+
+# Derived once, including authorization aliases; runtime rendering stays an
+# in-memory lookup and preserves retry and routing metadata. Registration
+# states share the administrator-owned rendering: ``str(error)`` shows the
+# catalogue text, never gateway prose.
+_ADMIN_ERROR_CODES = frozenset(
+    item.code
+    for item in _DEFINITIONS
+    if item.action in {_ADMIN_CONTACT, _REGISTRATION_CONTACT}
 )
 
 _catalog = {definition.code: definition for definition in _DEFINITIONS}
@@ -487,7 +651,8 @@ class DeepintShieldError(Exception):
 
     The original constructor remains compatible.  ``message`` and ``payload``
     retain gateway diagnostics, while ``code``/``description`` are safe fields
-    for programmatic branching and user-facing summaries.
+    for programmatic branching and user-facing summaries. Administrator-owned
+    failures render trusted, concise guidance instead of gateway prose.
     """
 
     default_code = ErrorCode.SDK_ERROR.value
@@ -511,6 +676,16 @@ class DeepintShieldError(Exception):
         self.description = definition.description
         self.retryable = definition.retryable
         self.details = dict(details or {})
+
+    def __str__(self) -> str:
+        if self.code in _ADMIN_ERROR_CODES:
+            return f"{self.code}: {ERROR_CATALOG[self.code].description}"
+        return super().__str__()
+
+    def __repr__(self) -> str:
+        if self.code in _ADMIN_ERROR_CODES:
+            return f"{type(self).__name__}({str(self)!r})"
+        return super().__repr__()
 
     @classmethod
     def from_response(

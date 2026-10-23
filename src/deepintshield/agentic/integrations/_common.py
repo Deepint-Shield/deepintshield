@@ -7,16 +7,18 @@ its underlying callable, return a callable that runs ``gate.enforce`` first.
 
 from __future__ import annotations
 
-import asyncio
 import functools
 import hashlib
 import inspect
+import sys
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Sequence
 
+from ..._compat import is_coroutine_function
 from ..errors import GovernanceConfigurationError, public_agentic_error_boundary
 from ..execution import execution_scope
 from ..gate import enforce, preflight
+from ..instrumentation import is_sdk_instrumentation_wrapper
 
 _FLAG = "_deepintshield_wrapped"
 _CALLBACK_INVENTORY_MAX = 64
@@ -168,9 +170,10 @@ def callback_method_inventory(
 def _framework_owned_callable(value: Any, prefixes: Sequence[str]) -> bool:
     """True only for implementation code owned by the framework/SDK itself.
 
-    No filesystem traversal is performed.  A custom subclass override has the
-    application's module on the bound method and is therefore captured, while
-    inherited framework handlers stay out of the upload.
+    No filesystem traversal is performed. Copied ``__module__`` metadata from
+    ``functools.wraps`` cannot exempt an application callback: its implementation
+    globals must belong to the loaded framework module. Custom overrides stay
+    in the inventory while inherited framework handlers stay out of the upload.
     """
     candidate = value
     if isinstance(candidate, functools.partial):
@@ -179,9 +182,21 @@ def _framework_owned_callable(value: Any, prefixes: Sequence[str]) -> bool:
         candidate = candidate.__func__
     if not inspect.isfunction(candidate):
         candidate = getattr(type(candidate), "__call__", candidate)
-    module = str(getattr(candidate, "__module__", "") or "")
+    # An SDK error boundary may copy the native callback's metadata while its
+    # own code lives in another module. Follow only attested SDK wrappers; an
+    # ordinary application decorator remains the executable implementation.
+    for _ in range(8):
+        if not is_sdk_instrumentation_wrapper(candidate):
+            break
+        candidate = vars(candidate)["__wrapped__"]
+        if inspect.ismethod(candidate):
+            candidate = candidate.__func__
+    module_name = str(getattr(candidate, "__module__", "") or "")
+    module = sys.modules.get(module_name)
+    if not inspect.ismodule(module) or getattr(candidate, "__globals__", None) is not vars(module):
+        return False
     excluded = tuple({*prefixes, "deepintshield"})
-    return any(module == root or module.startswith(root + ".") for root in excluded)
+    return any(module_name == root or module_name.startswith(root + ".") for root in excluded)
 
 
 def _callable_parts(value: Any) -> tuple[Any, Any]:
@@ -288,7 +303,7 @@ def wrap_callable(
             )
         return fn
 
-    if asyncio.iscoroutinefunction(fn):
+    if is_coroutine_function(fn):
 
         @functools.wraps(fn)
         async def awrapped(*args: Any, **kwargs: Any) -> Any:

@@ -98,7 +98,11 @@ def filter_chunks(chunks: Iterable[RetrievedChunk], response: Mapping[str, Any])
 
 
 class RAGSurface:
-    """RAG-focused helpers: evaluate a query over retrieved chunks, filter, or both."""
+    """Evaluate and filter retrieved content against RAG safety policies.
+
+    The application or retriever must authorize document access before sending
+    chunks. A safety allow decision does not establish a user's read permission.
+    """
 
     def __init__(self, client: "DeepintShield") -> None:
         self._client = client
@@ -116,10 +120,40 @@ class RAGSurface:
         metadata: Mapping[str, Any] | None = None,
         persist: bool | None = None,
     ) -> dict[str, Any]:
-        chunks_payload = [
-            c.to_payload() if isinstance(c, RetrievedChunk) else dict(c)
-            for c in chunks
-        ]
+        """Evaluate retrieved content against the gateway's RAG policies.
+
+        ``source_id`` accepts a registered ID or an exact registered source
+        name, such as ``"qa-support"``. The gateway trims outer whitespace,
+        tries the ID first, then matches names case-sensitively within the
+        authenticated workspace. A chunk's nonempty ``source_id`` overrides
+        the request source; chunks without one inherit the request source.
+        Omitting both uses workspace defaults. Unknown or ambiguous explicit
+        references raise ``DeepintShieldError`` (HTTP 404 or 409).
+
+        References are sent unchanged, without source-list requests. The
+        gateway resolves them to canonical IDs before policy evaluation and
+        reports canonical IDs in its trace. Name resolution requires a
+        gateway that supports it; existing ID-based callers are unchanged.
+
+        Send only documents the requester is authorized to read. Requester
+        fields provide policy context; they do not establish document access.
+        """
+        chunks_payload = []
+        for chunk in chunks:
+            payload = chunk.to_payload() if isinstance(chunk, RetrievedChunk) else dict(chunk)
+            # Older serialized chunks contain this removed field even when
+            # unused. Strip empty placeholders, but never silently ignore an
+            # attempted permission restriction.
+            legacy_tags = payload.pop("acl_tags", None)
+            if legacy_tags is not None and legacy_tags != []:
+                raise _annotate_error(
+                    ValueError(
+                        "RAG acl_tags is no longer supported. Authorize document "
+                        "access in your application or retriever before evaluation."
+                    ),
+                    ErrorCode.INVALID_ARGUMENT,
+                )
+            chunks_payload.append(payload)
         body: dict[str, Any] = {
             "query": query,
             "requester": requester or self._client.requester,
@@ -149,7 +183,13 @@ class RAGSurface:
         source_id: str | None = None,
         **kwargs: Any,
     ) -> tuple[list[RetrievedChunk], dict[str, Any]]:
-        """Evaluate and return (allowed_chunks, raw_response)."""
+        """Evaluate and return ``(allowed_chunks, raw_response)``.
+
+        ``source_id`` accepts the registered ID or name described in
+        :meth:`evaluate`. Returned chunks retain the caller's source
+        references; canonical source IDs are available in the raw trace.
+        Rejected chunks are removed and redactions are applied to copies.
+        """
         chunk_list = list(chunks)
         response = self.evaluate(query=query, chunks=chunk_list, source_id=source_id, **kwargs)
         return filter_chunks(chunk_list, response), response
@@ -175,8 +215,14 @@ class RAGSurface:
         retrievers, or a custom callable object). Mutates the retriever in
         place and returns it, so existing graph/chain wiring is unchanged.
 
-        Unauthorised chunks are dropped and redacted documents are copied
+        Policy-rejected chunks are dropped and redacted documents are copied
         with sanitized content. Source documents and allowed order are preserved.
+        The retriever must enforce document permissions before returning any
+        content to this wrapper. Safety filtering does not authorize access.
+
+        ``source_id`` accepts a registered ID or exact source name, as in
+        :meth:`evaluate`. For multiple sources, use ``chunk_mapper`` to set
+        each chunk's ``source_id``. Source resolution happens on the gateway.
         """
         method_names = [m for m in (*_RETRIEVE_METHODS, *_ASYNC_RETRIEVE_METHODS)
                         if callable(getattr(retriever, m, None))]
@@ -310,7 +356,7 @@ class RAGSurface:
             filtered_docs.append(sanitized_doc)
         return filtered_docs
 
-    # ── embedding-input guard (Portkey-parity "before request" stage) ─────────
+    # ── embedding-input guard (before the embedding request) ────────────────
 
     def guard_embedder(
         self,

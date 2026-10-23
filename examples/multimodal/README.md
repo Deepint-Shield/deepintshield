@@ -12,6 +12,9 @@ The client needs the existing virtual key and gateway URL. Provider credentials,
 model access and guardrail policy remain on the server. The runner does not
 discover models, substitute a model, or add universal sampling/reasoning values.
 
+These examples target DeepIntShield SDK and Server **3.2.0**. Install the
+released package with `python -m pip install "deepintshield==3.2.0"`.
+
 ## Setup and first run
 
 Run these commands from the `deepintshield/` SDK directory. Install this checkout

@@ -8,14 +8,194 @@ from __future__ import annotations
 import functools
 import inspect
 import logging
+import sys
+import types
+import weakref
 from typing import Any
 
 from ..enforcement import bind_engine, report_topology, resolve_engine
 from ..errors import GovernanceConfigurationError, public_agentic_boundary
 from ..execution import execution_scope
 from ..gate import resolve
+from ._common import (
+    CallbackInventory,
+    callback_method_inventory,
+    explicit_callback_inventory,
+    merge_callback_inventories,
+)
 
 log = logging.getLogger(__name__)
+
+_MAX_HANDOFF_AGENTS = 64
+_AGENT_HOOK_METHODS = (
+    "on_start", "on_end", "on_handoff", "on_tool_start", "on_tool_end",
+    "on_llm_start", "on_llm_end",
+)
+
+
+def _handoffs(owner: Any) -> tuple[tuple[Any, ...], bool]:
+    try:
+        values = getattr(owner, "handoffs", None)
+    except Exception:
+        return (), True
+    if values is None:
+        return (), False
+    if not isinstance(values, (list, tuple)):
+        return (), True
+    return tuple(values[:_MAX_HANDOFF_AGENTS]), len(values) > _MAX_HANDOFF_AGENTS
+
+
+def _factory_handoff_binding(value: Any, name: str) -> Any:
+    """Read one binding from the installed SDK's own handoff factory.
+
+    Native Handoff keeps ``on_handoff`` in a generated closure rather than a
+    public field. Code and globals must match the installed factory; copying a
+    module/name marker cannot make an application function a trusted wrapper.
+    """
+    module = sys.modules.get("agents.handoffs")
+    factory = getattr(module, "handoff", None)
+    if not inspect.isfunction(factory):
+        return None
+    if isinstance(value, functools.partial):
+        if value.func is not getattr(module, "_invoke_handoff_with_redaction", None):
+            return None
+        if len(value.args) != 1:
+            return None
+        value = value.args[0]
+    if not inspect.isfunction(value) or value.__globals__ is not vars(module):
+        return None
+    generated = (
+        constant for constant in factory.__code__.co_consts
+        if isinstance(constant, types.CodeType)
+    )
+    if not any(value.__code__ is code for code in generated):
+        return None
+    cells = value.__closure__ or ()
+    for key, cell in zip(value.__code__.co_freevars, cells):
+        if key == name:
+            try:
+                return cell.cell_contents
+            except ValueError:
+                return None
+    return None
+
+
+def handoff_agents(owner: Any) -> tuple[tuple[Any, ...], bool]:
+    """Return direct declared handoff agents, with a bounded failure flag."""
+    handoffs, incomplete = _handoffs(owner)
+    children: list[Any] = []
+    seen: set[int] = set()
+    for handoff in handoffs:
+        try:
+            if hasattr(handoff, "tools") and hasattr(handoff, "handoffs"):
+                child = handoff
+            else:
+                reference = getattr(handoff, "_agent_ref", None)
+                child = reference() if isinstance(reference, weakref.ReferenceType) else None
+                if child is None:
+                    child = _factory_handoff_binding(
+                        getattr(handoff, "on_invoke_handoff", None), "agent",
+                    )
+                if child is None:
+                    incomplete = True
+                    continue
+        except Exception:
+            incomplete = True
+            continue
+        if id(child) not in seen:
+            seen.add(id(child))
+            children.append(child)
+    return tuple(children), incomplete
+
+
+def _guardrail_callbacks(owner: Any, fields: tuple[str, ...], prefix: str) -> CallbackInventory:
+    inventories: list[CallbackInventory] = []
+    for field in fields:
+        try:
+            guards = getattr(owner, field, None)
+        except Exception:
+            inventories.append(CallbackInventory(incomplete=True))
+            continue
+        if guards is None:
+            continue
+        if not isinstance(guards, (list, tuple)):
+            inventories.append(CallbackInventory(incomplete=True))
+            continue
+        for index, guard in enumerate(guards[:_MAX_HANDOFF_AGENTS]):
+            inventories.append(explicit_callback_inventory(
+                guard, ("guardrail_function",), framework_modules=("agents",),
+                prefix=f"{prefix}.{field}[{index}]",
+            ))
+        if len(guards) > _MAX_HANDOFF_AGENTS:
+            inventories.append(CallbackInventory(incomplete=True))
+    return merge_callback_inventories(*inventories)
+
+
+def executable_callbacks(owner: Any, *, prefix: str = "openai_agents") -> CallbackInventory:
+    """Inventory this agent's supported callbacks, excluding child agents."""
+    framework_modules = ("agents",)
+    inventories = [explicit_callback_inventory(
+        owner, ("instructions", "prompt", "tool_use_behavior"),
+        framework_modules=framework_modules, prefix=prefix,
+    )]
+    inventories.append(_guardrail_callbacks(
+        owner, ("input_guardrails", "output_guardrails"), prefix,
+    ))
+    try:
+        tools = getattr(owner, "tools", None)
+    except Exception:
+        tools = None
+        inventories.append(CallbackInventory(incomplete=True))
+    if tools is not None:
+        if not isinstance(tools, (list, tuple)):
+            inventories.append(CallbackInventory(incomplete=True))
+        else:
+            for index, tool in enumerate(tools[:_MAX_HANDOFF_AGENTS]):
+                tool_prefix = f"{prefix}.tools[{index}]"
+                inventories.append(explicit_callback_inventory(
+                    tool,
+                    ("is_enabled", "needs_approval", "timeout_error_function",
+                     "custom_data_extractor", "_failure_error_function", "failure_error_function"),
+                    framework_modules=framework_modules, prefix=tool_prefix,
+                ))
+                inventories.append(_guardrail_callbacks(
+                    tool, ("tool_input_guardrails", "tool_output_guardrails"), tool_prefix,
+                ))
+            if len(tools) > _MAX_HANDOFF_AGENTS:
+                inventories.append(CallbackInventory(incomplete=True))
+    try:
+        hooks = getattr(owner, "hooks", None)
+    except Exception:
+        inventories.append(CallbackInventory(incomplete=True))
+    else:
+        inventories.append(callback_method_inventory(
+            hooks, _AGENT_HOOK_METHODS, framework_modules=framework_modules,
+            prefix=f"{prefix}.hooks",
+        ))
+    handoffs, incomplete = _handoffs(owner)
+    for index, handoff in enumerate(handoffs):
+        handoff_prefix = f"{prefix}.handoffs[{index}]"
+        inventories.append(explicit_callback_inventory(
+            handoff, ("on_handoff", "on_invoke_handoff", "input_filter", "is_enabled"),
+            framework_modules=framework_modules, prefix=handoff_prefix,
+        ))
+        # The native factory hides these two application callbacks in its
+        # own dispatch functions. Inspect only the exact supported bindings.
+        for field, binding in (("on_invoke_handoff", "on_handoff"), ("is_enabled", "is_enabled")):
+            try:
+                callback = _factory_handoff_binding(getattr(handoff, field, None), binding)
+            except Exception:
+                incomplete = True
+                continue
+            if callable(callback):
+                inventories.append(explicit_callback_inventory(
+                    types.SimpleNamespace(callback=callback), ("callback",),
+                    framework_modules=framework_modules,
+                    prefix=f"{handoff_prefix}.{binding}",
+                ))
+    if incomplete:
+        inventories.append(CallbackInventory(incomplete=True))
+    return merge_callback_inventories(*inventories)
 
 
 def enforce() -> bool:
@@ -99,11 +279,28 @@ def enforce() -> bool:
 
 @public_agentic_boundary
 def shield_agent(target: Any, *, engine: Any) -> Any:
-    tools = getattr(target, "tools", None)
-    if tools is None:
-        tools = target if isinstance(target, (list, tuple)) else [target]
-    for tool in tools:
-        _wrap_tool(tool, engine)
+    queue = [target]
+    seen: set[int] = set()
+    while queue:
+        owner = queue.pop(0)
+        if id(owner) in seen:
+            continue
+        if len(seen) >= _MAX_HANDOFF_AGENTS:
+            raise GovernanceConfigurationError(
+                framework="openai-agents", reason="handoff agent inventory exceeds its bound",
+            )
+        seen.add(id(owner))
+        tools = getattr(owner, "tools", None)
+        if tools is None:
+            tools = owner if isinstance(owner, (list, tuple)) else [owner]
+        for tool in tools:
+            _wrap_tool(tool, engine)
+        children, incomplete = handoff_agents(owner)
+        if incomplete:
+            raise GovernanceConfigurationError(
+                framework="openai-agents", reason="handoff agent inventory is incomplete",
+            )
+        queue.extend(child for child in children if id(child) not in seen)
     return target
 
 

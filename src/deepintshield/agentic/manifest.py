@@ -12,6 +12,7 @@ declared-vs-observed drift (ASI04 supply-chain).
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 import logging
 from dataclasses import asdict, dataclass, field
@@ -93,6 +94,149 @@ def _safe_source(fn: Any) -> str:
         return ""
 
 
+# Attributes through which LangChain composites and LangGraph subgraphs reach
+# what they dispatch. The walk is depth-first and capped, so a node is
+# described from the runnables it executes, never from an arbitrary object
+# graph.
+_COMPOSITE_CHILD_ATTRIBUTES = (
+    "steps",  # RunnableSequence
+    "steps__",  # RunnableParallel
+    "bound",  # RunnableBinding, RunnableEach, a subgraph's PregelNode
+    "runnable",  # RunnableWithFallbacks
+    "fallbacks",
+    "branches",  # RunnableBranch
+    "default",
+    "mapper",  # RunnableAssign, RunnablePick
+    "runnables",  # RouterRunnable
+    "func",  # RunnableLambda, RunnableCallable
+    "afunc",
+    "tools_by_name",  # ToolNode
+    "nodes",  # a compiled subgraph
+)
+_COMPOSITE_MAX_OBJECTS = 64
+# Callables from these modules carry no application code (``itemgetter``,
+# ``partial``, builtins): they are named in the composition, not read.
+_INERT_CALLABLE_MODULES = frozenset({"builtins", "operator", "functools"})
+# Framework classes are named, not read: their code is the installed package.
+_FRAMEWORK_MODULE_PREFIXES = ("langchain", "langgraph", "deepintshield")
+_RESERVED_GRAPH_KEYS = frozenset({"__start__", "__end__"})
+
+
+def _text_fingerprint(text: str) -> str:
+    return "src:" + hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def _composite_node_source(node: Any) -> str:
+    """Scannable source for a node that has no plain function.
+
+    A ``RunnableParallel``, a chain, a ``RunnableBranch``, a ``ToolNode`` or a
+    compiled subgraph is covered by what it dispatches: the text names the
+    composition (classes and keys, never arguments or configuration) and
+    carries the source of every Python callable and application class inside
+    it, so the gateway scans exactly the code that runs. Returns "" when one
+    of those cannot be read or the composition exceeds the walk's cap; the
+    node then stays without source and the gateway refuses the blueprint as
+    incomplete coverage, exactly as for a plain function without source.
+    """
+    root = None
+    for holder in (getattr(node, "bound", None), getattr(node, "runnable", None), node):
+        if holder is not None:
+            root = holder
+            break
+    if root is None:
+        return ""
+    sources: list[str] = []
+    structure = _describe_runnable(root, sources, set(), [_COMPOSITE_MAX_OBJECTS])
+    if structure is None:
+        return ""
+    parts = [f"# {structure}"]
+    parts.extend(source.rstrip() for source in sources)
+    return "\n".join(parts) + "\n"
+
+
+def _read_composite_source(value: Any, sources: list[str]) -> bool:
+    source = _safe_source(value)
+    if not source:
+        return False
+    if source not in sources:
+        sources.append(source)
+    return True
+
+
+def _composite_leaf_label(obj: Any) -> str:
+    name = type(obj).__qualname__
+    for attribute in ("model_name", "model"):
+        try:
+            value = getattr(obj, attribute, None)
+        except Exception:
+            value = None
+        if isinstance(value, str) and value:
+            return f"{name}(model={value!r})"
+    return name
+
+
+def _describe_runnable(
+    obj: Any, sources: list[str], seen: set[int], budget: list[int]
+) -> str | None:
+    """One element of a composition as text, reading the application code it
+    holds into ``sources``. None when it cannot be described completely."""
+    if budget[0] <= 0:
+        return None
+    budget[0] -= 1
+    if id(obj) in seen:
+        return type(obj).__qualname__
+    seen.add(id(obj))
+    from .registry import _python_function
+
+    # Application code: a function, a method or an object with a Python
+    # ``__call__`` is read in full.
+    if _python_function(obj) is not None:
+        if not _read_composite_source(obj, sources):
+            return None
+        return getattr(obj, "__qualname__", None) or type(obj).__qualname__
+    module = str(getattr(type(obj), "__module__", "") or "")
+    if module in _INERT_CALLABLE_MODULES:
+        return type(obj).__qualname__
+    # A container: described by what it dispatches.
+    children: list[str] = []
+    for attribute in _COMPOSITE_CHILD_ATTRIBUTES:
+        try:
+            child = getattr(obj, attribute, None)
+        except Exception:
+            child = None
+        if child is None:
+            continue
+        values: list[tuple[str, Any]] = []
+        if isinstance(child, dict):
+            for key, value in child.items():
+                if isinstance(key, str) and key in _RESERVED_GRAPH_KEYS:
+                    continue
+                values.append((f"{key}=", value))
+        elif isinstance(child, (list, tuple)):
+            for value in child:
+                if isinstance(value, tuple):
+                    # RunnableBranch: (condition, runnable) pairs.
+                    values.extend(("", part) for part in value)
+                else:
+                    values.append(("", value))
+        else:
+            values.append(("", child))
+        for prefix, value in values:
+            described = _describe_runnable(value, sources, seen, budget)
+            if described is None:
+                return None
+            children.append(prefix + described)
+    name = type(obj).__qualname__
+    if children:
+        return f"{name}({', '.join(children)})"
+    # A leaf: a framework class is named; an application class is read.
+    if module.startswith(_FRAMEWORK_MODULE_PREFIXES):
+        return _composite_leaf_label(obj)
+    if not _read_composite_source(type(obj), sources):
+        return None
+    return name
+
+
 def _mcp_server_selector(tool: Any) -> str:
     """Return a credential-free configured-server selector, when exposed.
 
@@ -158,9 +302,9 @@ def describe(target: Any) -> AgentManifest:
         isinstance(oa_tools, (list, tuple)) and oa_tools and hasattr(oa_tools[0], "on_invoke_tool")
     ):
         return _describe_tools(target, "openai_agents")
-    # Everything else that looks like a tool / list of tools (CrewAI, LangChain
+    # Everything else that looks like a tool / list of tools (LangChain
     # StructuredTool, LlamaIndex, AutoGen FunctionTool, …).
-    return _describe_tools(target, "crewai")
+    return _describe_tools(target, "generic")
 
 
 def _describe_langgraph(app: Any) -> AgentManifest:
@@ -188,6 +332,16 @@ def _describe_langgraph(app: Any) -> AgentManifest:
             src = _safe_source(fn)
             if src:
                 sources[tname] = src
+            continue
+        # A composite Runnable (RunnableParallel, a chain, a subgraph) has no
+        # single function to read. It is covered by what it dispatches: the
+        # composition and the source of every Python callable inside it.
+        # Anything unreadable leaves the node without source, which the
+        # gateway refuses as incomplete coverage.
+        src = _composite_node_source(node)
+        if src:
+            sources[tname] = src
+            fingerprints[tname] = _text_fingerprint(src)
     edges: list[list[str]] = []
     try:
         gr = app.get_graph()
@@ -206,8 +360,10 @@ def _describe_langgraph(app: Any) -> AgentManifest:
 
 
 def _tool_fn(tool: Any) -> Any:
-    """The underlying callable of a tool object (CrewAI/LangChain/LlamaIndex/…)."""
-    return getattr(tool, "func", None) or getattr(tool, "_run", None) or (tool if callable(tool) else None)
+    """Use the same executable tool boundary as canonical discovery."""
+    from .registry import _tool_callable
+
+    return _tool_callable(tool)
 
 
 def _tool_name(tool: Any) -> str:

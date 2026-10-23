@@ -11,12 +11,25 @@ import pytest
 
 @pytest.mark.parametrize("supported", [True, False])
 def test_late_framework_submodule_import_finishes_before_guard_install(tmp_path, supported):
-    package = tmp_path / "litellm"
+    package = tmp_path / "langchain_core"
     package.mkdir()
-    (package / "helpers.py").write_text("value = 1\n")
+    (package / "helpers.py").write_text(
+        "from langchain_core import initializing\nassert initializing\nvalue = 1\n"
+    )
     (package / "__init__.py").write_text(
-        "from litellm.helpers import value\n"
-        + ("def completion(*args, **kwargs):\n    return 'raw'\n" if supported else "")
+        "initializing = True\n"
+        "from langchain_core.helpers import value\n"
+        "from langchain_core.tools import BaseTool\n"
+        "initializing = False\n"
+    )
+    (package / "tools.py").write_text(
+        "from langchain_core.helpers import value\n"
+        "class BaseTool:\n"
+        + (
+            "    def run(self, *args, **kwargs):\n        return 'raw'\n"
+            "    async def arun(self, *args, **kwargs):\n        return 'raw'\n"
+            if supported else "    unsupported_api = True\n"
+        )
     )
     script = f"""
 import sys
@@ -24,13 +37,14 @@ sys.path.insert(0, {str(tmp_path)!r})
 from deepintshield import DeepintShield
 with DeepintShield(virtual_key="sk-ds-test", base_url="http://127.0.0.1:1"):
     try:
-        import litellm
+        import langchain_core
     except RuntimeError as error:
         assert not {supported!r}, str(error)
         assert getattr(error, "_deepintshield_error_code", "") == "governance_configuration_error"
     else:
         assert {supported!r}, "unsupported framework imported ungoverned"
-        assert getattr(litellm.completion, "_deepintshield_guarded", False)
+        assert not langchain_core.initializing
+        assert getattr(langchain_core.BaseTool.run, "_deepintshield_guarded", False)
 """
     result = subprocess.run(
         [sys.executable, "-c", script], capture_output=True, text=True, timeout=30

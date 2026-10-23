@@ -4,13 +4,22 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "deepintshield"
-version = "2.8.0"
+version = "3.2.2"
 description = "Unified Python SDK for routing chat, RAG, agentic tool-gating, identity, and MCP traffic through DeepintShield - drop-in across the top agentic frameworks."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "Apache-2.0"
 authors = [{ name = "DeepintShield" }]
-keywords = ["llm", "agent", "security", "guardrails", "pep", "pdp", "agentic", "deepintshield", "entra", "langgraph", "crewai"]
+keywords = ["llm", "agent", "security", "guardrails", "pep", "pdp", "agentic", "deepintshield", "entra", "langgraph"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+]
 dependencies = [
   "httpx>=0.28.1",
   "pydantic>=2.0",
@@ -33,7 +42,6 @@ langgraph = [
   "langgraph>=0.4.2",
 ]
 pydanticai = ["pydantic-ai-slim[openai]>=2.41.0,<3"]
-crewai = ["crewai[openai]>=1.15.20,<2"]
 openai-agents = [
   "openai-agents>=0.22.1,<1",
   "mcp>=1.29,<2",
@@ -48,6 +56,10 @@ azure = ["azure-identity>=1.16.0"]
 # because a deployment whose identity provider does not bind tokens has nothing
 # to prove possession of, and should not be made to carry a crypto dependency.
 dpop = ["cryptography>=42.0.0"]
+# Durable approved keys for gateway-managed runtime authentication. The native
+# OS keyring is preferred; POSIX deployments can use a protected file/mount.
+runtime = ["cryptography>=42.0.0", "keyring>=25.0.0"]
+runtime-aws = ["cryptography>=42.0.0", "keyring>=25.0.0", "boto3>=1.43.0"]
 mcp = ["mcp>=1.29,<2"]
 langchain-mcp = [
   "langchain-mcp-adapters>=0.3.2,<0.4",
@@ -57,33 +69,42 @@ anthropic-mcp = [
   "anthropic[mcp]>=0.120.2,<1",
   "mcp>=1.29,<2",
 ]
+# One compatible aggregate: OpenAI 2 for Strands/LlamaIndex, and MCP 1.29+
+# for native MCP sessions. Named extras can select newer framework releases.
 all = [
-  "openai>=1.75.0",
+  "openai>=2.45.0,<3",
   "anthropic[mcp]>=0.120.2,<1",
   "boto3>=1.37.0",
   "google-genai>=1.12.1",
-  "litellm>=1.67.0",
+  "litellm>=1.100.0,<2",
   "langchain-core>=0.3.55",
   "langchain-openai>=0.3.14",
   "langchain-mcp-adapters>=0.3.2,<0.4",
   "langgraph>=0.4.2",
-  "pydantic-ai>=0.1.1",
-  "crewai>=0.70.0",
-  "openai-agents>=0.21,<1",
+  "pydantic-ai-slim[openai]>=2.31.0,<2.32",
+  "openai-agents>=0.20.0,<0.21",
   "mcp>=1.29,<2",
-  "llama-index>=0.11.0",
-  "autogen-agentchat>=0.4.0",
-  "autogen-ext[openai]>=0.4.0",
-  "temporalio>=1.7.0",
-  "strands-agents>=0.1.0",
-  "google-adk>=0.1.0",
+  "llama-index-llms-openai-like>=0.8.0,<1",
+  "llama-index-embeddings-openai-like>=0.4.0,<1",
+  "autogen-agentchat>=0.7.5,<1",
+  "autogen-ext[openai]>=0.7.5,<1",
+  "temporalio>=1.32.0,<2",
+  "strands-agents[openai]>=1.55.0,<2",
+  "google-adk>=1.39.1,<2; python_version < '3.14'",
+  "google-adk>=1.35.0,<1.36; python_version >= '3.14'",
+  # AutoGen requires protobuf 5; newer Google API Core requires protobuf 6
+  # through grpcio-status on Python 3.14.
+  "google-api-core>=2.25.2,<2.26; python_version >= '3.14'",
   "azure-identity>=1.16.0",
   "cryptography>=42.0.0",
+  "keyring>=25.0.0",
 ]
 dev = [
+  "packaging>=23.2",
   "pytest>=8.0",
   "pytest-asyncio>=0.23",
   "respx>=0.21",
+  "tomli>=2; python_version < '3.11'",
 ]
 
 [project.urls]

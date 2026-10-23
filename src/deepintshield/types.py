@@ -4,12 +4,24 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Literal
 
 GuardrailStage = Literal["input", "output", "action", "mcp", "rag"]
-GuardrailDecision = Literal["allow", "block", "deny", "redact", "monitor", "approval_required"]
-NON_BLOCKING_DECISIONS = frozenset({"allow", "redact", "monitor"})
+GuardrailDecision = Literal[
+    "allow", "allow_with_redaction", "block", "deny", "redact", "monitor", "sandbox", "approval_required"
+]
+NON_BLOCKING_DECISIONS = frozenset({"allow", "allow_with_redaction", "redact", "monitor"})
 
 
 @dataclass(slots=True)
 class RetrievedChunk:
+    """Retrieved content and its security metadata.
+
+    ``source_id`` accepts a registered source ID or exact source name within
+    the authenticated workspace. Empty values inherit the evaluation's
+    ``source_id``, or use workspace defaults when neither is supplied.
+    ``source_name`` is descriptive metadata, not a source lookup selector.
+    Authorize document access in the application or retriever before creating
+    chunks for safety evaluation. RAG filtering does not grant document access.
+    """
+
     chunk_id: str
     document_id: str
     content: str
@@ -21,7 +33,6 @@ class RetrievedChunk:
     source_health: str = "healthy"
     trust_score: int = 80
     injection_score: int = 0
-    acl_tags: list[str] = field(default_factory=list)
     labels: list[str] = field(default_factory=list)
     pii_flags: list[str] = field(default_factory=list)
     quarantined: bool = False
@@ -66,6 +77,7 @@ class GuardrailResult:
 
     @property
     def allowed(self) -> bool:
+        """Classify the verdict independently of the gateway enforcement mode."""
         return (self.decision or "").lower() in NON_BLOCKING_DECISIONS
 
     @property
